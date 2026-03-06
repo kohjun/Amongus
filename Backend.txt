@@ -1,0 +1,23 @@
+among-us-offline/
+├── server/                    ← 백엔드 (지금 만들 것)
+│   ├── src/
+│   │   ├── engine/
+│   │   │   ├── GameEngine.js      ← 핵심 게임 로직
+│   │   │   ├── GameRoom.js        ← 방 상태 관리
+│   │   │   ├── Player.js          ← 플레이어 모델
+│   │   │   └── EventBus.js        ← 이벤트 발송
+│   │   ├── systems/
+│   │   │   ├── MissionSystem.js   ← 미션 관리
+│   │   │   ├── ItemSystem.js      ← 아이템/재화
+│   │   │   ├── VoteSystem.js      ← 투표
+│   │   │   └── ProximitySystem.js ← 거리 판정
+│   │   ├── ai/
+│   │   │   └── AIDirector.js      ← LLM 해설
+│   │   ├── socket/
+│   │   │   └── SocketHandler.js   ← WebSocket 처리
+│   │   ├── routes/
+│   │   │   └── roomRoutes.js      ← REST API
+│   │   └── app.js
+│   ├── package.json
+│   └── .env
+└── client/                    ← 나중에

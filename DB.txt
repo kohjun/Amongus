@@ -1,0 +1,37 @@
+-- 유저
+CREATE TABLE users (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nickname    VARCHAR(20) NOT NULL UNIQUE,
+    currency    INT DEFAULT 0,          -- 게임 내 재화
+    created_at  TIMESTAMP DEFAULT NOW()
+);
+
+-- 전적
+CREATE TABLE game_records (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID REFERENCES users(id),
+    role        VARCHAR(20),            -- crew / impostor
+    result      VARCHAR(20),            -- win / lose
+    kills       INT DEFAULT 0,
+    tasks_done  INT DEFAULT 0,
+    played_at   TIMESTAMP DEFAULT NOW()
+);
+
+-- 아이템 보유
+CREATE TABLE user_items (
+    user_id     UUID REFERENCES users(id),
+    item_id     VARCHAR(50),
+    quantity    INT DEFAULT 0,
+    PRIMARY KEY (user_id, item_id)
+);
+
+-- 게임방 (종료 후 기록용)
+CREATE TABLE game_rooms (
+    id          UUID PRIMARY KEY,
+    host_id     UUID REFERENCES users(id),
+    player_count INT,
+    winner_role VARCHAR(20),
+    duration_sec INT,
+    played_at   TIMESTAMP DEFAULT NOW()
+);
+
