@@ -1,0 +1,3 @@
+node_modules
+echo "firebase-service-account.json"
+firebase-service-account.json
