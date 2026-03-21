@@ -1,185 +1,131 @@
-// src/engine/GameEngine.js
-// (기존 코드에서 endGame() 메서드만 수정 — Firestore 전적 저장 추가)
-//
-// 변경사항:
-//   endGame() → saveGameResult() 호출 추가
-//   그 외 모든 로직은 기존과 동일
+// server/engine/GameRoom.js v2.0
 
 'use strict';
 
-const { GameRoom, GAME_STATUS } = require('./GameRoom');
-const MissionSystem  = require('../systems/MissionSystem');
-const ItemSystem     = require('../systems/ItemSystem');
-const VoteSystem     = require('../systems/VoteSystem');
-const ProximitySystem = require('../systems/ProximitySystem');
-const EventBus       = require('./EventBus');
+const { v4: uuidv4 } = require('uuid');
+const Player         = require('./Player');
 
-class GameEngine {
-  constructor() {
-    this.rooms = new Map();
+const GAME_STATUS = {
+  WAITING:  'waiting',
+  STARTING: 'starting',
+  PLAYING:  'playing',
+  MEETING:  'meeting',
+  ENDED:    'ended',
+};
+
+class GameRoom {
+  constructor({ hostUserId, settings = {} }) {
+    this.roomId    = uuidv4();
+    this.hostId    = hostUserId;
+    this.status    = GAME_STATUS.WAITING;
+    this.createdAt = Date.now();
+
+    // ★ v2.0: 게임 타입 (GamePlugin 식별자)
+    this.gameType  = settings.gameType || 'among_us';
+
+    // ★ v2.0: 모듈 인스턴스 (ModuleFactory가 주입)
+    // { proximity, vote, mission, item, tag, round, team }
+    this.modules   = {};
+
+    this.players   = new Map();
+
+    this.settings  = {
+      maxPlayers:     settings.maxPlayers     || 10,
+      impostorCount:  settings.impostorCount  || null,
+      missionPerCrew: settings.missionPerCrew || 3,
+      killCooldown:   settings.killCooldown   || 30,
+      discussionTime: settings.discussionTime || 90,
+      voteTime:       settings.voteTime       || 30,
+    };
+
+    // 미션 카운터 (MissionSystem용)
+    this.totalMissions     = 0;
+    this.completedMissions = 0;
+
+    // 킬 로그
+    this.killLog     = [];
+    this.meetingCount = 0;
+
+    // ★ v2.0: ability 쿨다운 맵 { `${userId}_${abilityType}`: timestamp }
+    this._abilityCooldowns = new Map();
+
+    // 조건 보상 추적
+    this._grantedConditions = new Set();
   }
 
-  // ── 방 관리 ────────────────────────────────────────────
+  // ── 플레이어 관리 ──────────────────────────────────
 
-  createRoom(hostUserId, settings) {
-    const room = new GameRoom({ hostUserId, settings });
-    this.rooms.set(room.roomId, room);
-    return room;
-  }
+  addPlayer(playerInfo) {
+    if (this.players.size >= this.settings.maxPlayers)
+      throw new Error('방이 꽉 찼습니다.');
+    if (this.status !== GAME_STATUS.WAITING)
+      throw new Error('이미 게임이 시작됐습니다.');
 
-  getRoom(roomId) {
-    const room = this.rooms.get(roomId);
-    if (!room) throw new Error('존재하지 않는 방입니다.');
-    return room;
-  }
-
-  joinRoom(roomId, playerInfo) {
-    const room   = this.getRoom(roomId);
-    const player = room.addPlayer(playerInfo);
-    EventBus.emit('player_joined', { room, player });
-    return { room, player };
-  }
-
-  leaveRoom(roomId, userId) {
-    const room   = this.getRoom(roomId);
-    const player = room.getPlayer(userId);
-    room.removePlayer(userId);
-    EventBus.emit('player_left', { room, player });
-    if (room.players.size === 0) this.rooms.delete(roomId);
-  }
-
-  // ── 게임 시작 ──────────────────────────────────────────
-
-  startGame(roomId, requesterId) {
-    const room = this.getRoom(roomId);
-    if (room.hostId !== requesterId) throw new Error('방장만 게임을 시작할 수 있습니다.');
-    if (room.players.size < 4)       throw new Error('최소 4명이 필요합니다.');
-
-    room.assignRoles();
-    room.status = GAME_STATUS.PLAYING;
-    MissionSystem.assignMissions(room);
-
-    EventBus.emit('game_started', { room });
-    return room;
-  }
-
-  // ── 킬 처리 ────────────────────────────────────────────
-
-  handleKill(roomId, impostorId, targetId) {
-    const room     = this.getRoom(roomId);
-    const impostor = room.getPlayer(impostorId);
-    const target   = room.getPlayer(targetId);
-
-    if (!impostor || !target)       throw new Error('플레이어를 찾을 수 없습니다.');
-    if (impostor.role !== 'impostor') throw new Error('임포스터만 킬할 수 있습니다.');
-    if (!target.isAlive)            throw new Error('이미 사망한 플레이어입니다.');
-
-    // ProximitySystem 기준 거리 검증
-    const killCheck = ProximitySystem.canKill(roomId, impostorId, targetId);
-    if (!killCheck.possible) throw new Error(killCheck.reason);
-
-    // 방탄조끼 체크
-    const blocked = ItemSystem.checkBulletproof(room, target);
-    if (blocked) {
-      EventBus.emit('kill_blocked', { room, impostor, target });
-      return { blocked: true, target };
-    }
-
-    target.die();
-    room.killLog.push({ impostorId, targetId, zone: target.zone, timestamp: Date.now() });
-    ItemSystem.checkConditions(room, impostor, 'kill');
-    EventBus.emit('player_killed', { room, impostor, target });
-
-    const result = room.checkWinCondition();
-    if (result) this.endGame(roomId, result);
-
-    return { blocked: false, target };
-  }
-
-  // ── 이동 처리 ──────────────────────────────────────────
-
-  handleMove(roomId, userId, zone) {
-    const room   = this.getRoom(roomId);
-    const player = room.getPlayer(userId);
-    if (!player || !player.isAlive) throw new Error('이동 불가 상태입니다.');
-
-    const prevZone  = player.zone;
-    player.zone     = zone;
-    player.lastSeen = Date.now();
-
-    EventBus.emit('player_moved', { room, player, prevZone, zone });
+    const player = new Player(playerInfo);
+    if (this.players.size === 0) player.isHost = true;
+    this.players.set(player.userId, player);
     return player;
   }
 
-  // ── 근접 거리 업데이트 ─────────────────────────────────
+  removePlayer(userId) { this.players.delete(userId); }
 
-  handleProximityUpdate(roomId, fromId, toId, distanceM) {
-    const room   = this.getRoom(roomId);
-    const player = room.getPlayer(fromId);
-    if (player) player.updateDistance(toId, distanceM);
+  getPlayer(userId)    { return this.players.get(userId); }
+
+  // ── 역할 배정 (GamePlugin 위임) ───────────────────
+  // GameEngine.startGame()에서 Plugin.assignRoles()를 받아 처리
+
+  // ── 상태 조회 ──────────────────────────────────────
+
+  get alivePlayers() {
+    return [...this.players.values()].filter(p => p.isAlive);
   }
 
-  // ── 미션 완료 ──────────────────────────────────────────
-
-  handleTaskComplete(roomId, userId, taskId) {
-    const room   = this.getRoom(roomId);
-    const player = room.getPlayer(userId);
-    const result = MissionSystem.completeTask(room, player, taskId);
-
-    EventBus.emit('task_completed', { room, player, taskId });
-    ItemSystem.checkConditions(room, player, 'task_completed');
-
-    const winResult = room.checkWinCondition();
-    if (winResult) this.endGame(roomId, winResult);
-
-    return result;
+  // ★ v2.0: team 기반으로 조회
+  get aliveImpostors() {
+    return this.alivePlayers.filter(p => p.team === 'impostor');
   }
 
-  // ── 긴급회의/신고 ──────────────────────────────────────
-
-  handleMeeting(roomId, callerId, bodyId = null) {
-    const room   = this.getRoom(roomId);
-    const caller = room.getPlayer(callerId);
-
-    if (room.status !== GAME_STATUS.PLAYING) throw new Error('회의를 소집할 수 없는 상태입니다.');
-
-    room.status = GAME_STATUS.MEETING;
-    room.meetingCount++;
-
-    const reason = bodyId ? 'report' : 'emergency';
-    EventBus.emit('meeting_called', { room, caller, bodyId, reason });
-
-    return VoteSystem.startMeeting(room, {
-      callerId,
-      bodyId,
-      reason,
-      discussionTime: room.settings.discussionTime,
-      voteTime:       room.settings.voteTime,
-    });
+  get aliveCrew() {
+    return this.alivePlayers.filter(p => p.team === 'crew');
   }
 
-  // ── 게임 종료 ──────────────────────────────────────────
-  // ★ 수정: Firestore 전적 저장 추가
+  getAliveByTeam(teamId) {
+    return this.alivePlayers.filter(p => p.team === teamId);
+  }
 
-  endGame(roomId, result) {
-    const room  = this.getRoom(roomId);
-    room.status = GAME_STATUS.ENDED;
+  // ── 승리 조건 체크 (GamePlugin 위임) ─────────────
 
-    // AIDirector 스케줄러 중단
-    const AIDirector = require('../ai/AIDirector');
-    AIDirector.stopGuideScheduler(room);
+  checkWinCondition() {
+    try {
+      const registry = require('../games/GamePluginRegistry');
+      const plugin   = registry.get(this.gameType);
+      return plugin.checkWinCondition(this);
+    } catch {
+      // 플러그인 없으면 기존 어몽어스 로직 fallback
+      if (this.aliveImpostors.length === 0)
+        return { winner: 'crew', reason: 'impostor_ejected' };
+      if (this.aliveImpostors.length >= this.aliveCrew.length)
+        return { winner: 'impostor', reason: 'crew_outnumbered' };
+      if (this.completedMissions >= this.totalMissions && this.totalMissions > 0)
+        return { winner: 'crew', reason: 'all_tasks_done' };
+      return null;
+    }
+  }
 
-    EventBus.emit('game_ended', { room, result });
+  // ── 직렬화 ─────────────────────────────────────────
 
-    // ★ Firestore에 전적 비동기 저장 (게임 흐름을 블로킹하지 않음)
-    const { saveGameResult } = require('../auth/Userservice');
-    saveGameResult(room, result).catch(err => {
-      console.error('[GameEngine] 전적 저장 실패:', err.message);
-    });
-
-    // 10분 후 방 메모리에서 정리
-    setTimeout(() => this.rooms.delete(roomId), 10 * 60 * 1000);
+  toPublicState() {
+    return {
+      roomId:            this.roomId,
+      gameType:          this.gameType,   // ★ v2.0 추가
+      status:            this.status,
+      playerCount:       this.players.size,
+      players:           [...this.players.values()].map(p => p.toPublicInfo()),
+      totalMissions:     this.totalMissions,
+      completedMissions: this.completedMissions,
+      meetingCount:      this.meetingCount,
+    };
   }
 }
 
-module.exports = new GameEngine();
+module.exports = { GameRoom, GAME_STATUS };

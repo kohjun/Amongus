@@ -1,4 +1,6 @@
-// src/engine/Player.js
+// server/engine/Player.js v2.0
+
+'use strict';
 
 const { v4: uuidv4 } = require('uuid');
 
@@ -8,29 +10,33 @@ class Player {
     this.nickname = nickname;
     this.socketId = socketId;
 
-    // 역할 (게임 시작 전엔 null)
-    this.role     = null;   // 'crew' | 'impostor'
+    // ★ v2.0: roleId (GamePlugin이 정의한 역할 ID)
+    this.roleId   = null;   // 'crew' | 'impostor' | 'mafia' | 'doctor' ...
+    this.role     = null;   // 하위 호환용 (roleId와 동기화)
+
+    // ★ v2.0: team (TeamSystem용)
+    this.team     = null;   // 'crew' | 'impostor' | 'mafia' | 'citizen' ...
+
     this.isAlive  = true;
     this.isHost   = false;
+    this.isStunned = false;  // ★ v2.0: STUN ability용
 
-    // 위치
-    this.zone     = null;   // 현재 구역
-    this.lastSeen = null;   // 마지막 위치 업데이트 시간
+    this.zone     = null;
+    this.lastSeen = null;
+    this.distances = {};
 
-    // 근접 데이터 (UWB/BLE)
-    this.distances = {};    // { playerId: 거리(m) }
-
-    // 미션
-    this.tasks        = [];
+    this.tasks          = [];
     this.completedTasks = [];
 
-    // 아이템/재화
     this.currency = 0;
-    this.items    = [];     // [{ itemId, quantity }]
+    this.items    = [];
   }
 
-  assignRole(role) {
-    this.role = role;
+  // ★ v2.0: roleId와 role(하위호환) 동기화
+  assignRole(roleId, team) {
+    this.roleId = roleId;
+    this.role   = roleId;   // 기존 코드 호환
+    this.team   = team || roleId;
   }
 
   die() {
@@ -38,42 +44,26 @@ class Player {
   }
 
   updateDistance(targetPlayerId, distanceM) {
-    this.distances[targetPlayerId] = {
-      distance: distanceM,
-      updatedAt: Date.now(),
-    };
-  }
-
-  canKill(targetPlayer) {
-    if (this.role !== 'impostor') return false;
-    if (!targetPlayer.isAlive)   return false;
-
-    const record = this.distances[targetPlayer.userId];
-    if (!record) return false;
-
-    // 측정값이 5초 이상 지난 경우 무효
-    const isStale = Date.now() - record.updatedAt > 5000;
-    if (isStale) return false;
-
-    const KILL_RANGE = 2.0; // 미터
-    return record.distance <= KILL_RANGE;
+    this.distances[targetPlayerId] = { distance: distanceM, updatedAt: Date.now() };
   }
 
   toPublicInfo() {
-    // 다른 플레이어에게 공개되는 정보 (역할 숨김)
     return {
       userId:   this.userId,
       nickname: this.nickname,
       isAlive:  this.isAlive,
       zone:     this.zone,
+      // ★ v2.0: team은 공개 (역할은 숨김)
+      team:     null, // 게임 종료 전까지 숨김
     };
   }
 
   toPrivateInfo() {
-    // 본인에게만 보이는 정보
     return {
       ...this.toPublicInfo(),
+      roleId:         this.roleId,
       role:           this.role,
+      team:           this.team,
       tasks:          this.tasks,
       completedTasks: this.completedTasks,
       items:          this.items,

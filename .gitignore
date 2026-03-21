@@ -1,4 +1,26 @@
-node_modules
-echo "firebase-service-account.json"
-firebase-service-account.json
+# 환경변수
 .env
+*.env.local
+ 
+# Firebase 서비스 계정 키 — 절대 커밋 금지
+firebase-service-account.json
+ 
+# 의존성
+node_modules/
+client/node_modules/
+server/node_modules/
+ 
+# 빌드
+dist/
+build/
+.expo/
+*.tsbuildinfo
+ 
+# OS
+.DS_Store
+Thumbs.db
+ 
+# IDE
+.vscode/
+.idea/
+ 
