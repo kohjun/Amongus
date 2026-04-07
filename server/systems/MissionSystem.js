@@ -37,7 +37,7 @@ class MissionSystem {
     const picked    = [];
 
     // 난이도 순 섞기
-    const shuffled = pool.sort(() => Math.random() - 0.5);
+    const shuffled = [...pool].sort(() => Math.random() - 0.5);
 
     for (const def of shuffled) {
       if (picked.length >= count) break;

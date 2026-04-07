@@ -14,12 +14,23 @@ interface ProximityRecord {
   updatedAt: number;
 }
 
+// GameScreen에서 주입하는 콜백 타입
+export interface NearbyPlayerInfo {
+  playerId: string;
+  nickname: string;
+  distance: number;
+  method:   'uwb' | 'ble';
+}
+
 class ProximityService {
   private roomId:   string = '';
   private myUserId: string = '';
   private peerMap:  Map<string, string> = new Map(); // deviceId → userId
   private records:  Map<string, ProximityRecord> = new Map();
   private listeners: (() => void)[] = [];
+
+  // 오류 4 수정: GameScreen에서 ProximityService.onNearbyUpdate = ... 할당 가능하도록 공개
+  public onNearbyUpdate: ((players: NearbyPlayerInfo[]) => void) | null = null;
 
   // ── 초기화 ─────────────────────────────────────────────
   async init(roomId: string, myUserId: string) {

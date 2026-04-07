@@ -118,6 +118,7 @@ async function saveGameResult(room, result) {
     reason:      result.reason,
     playerCount: room.players.size,
     players:     playerSummaries,
+    playerIds:   playerSummaries.map(p => p.userId), // array-contains 쿼리용 평탄 배열
     duration:    Math.floor((Date.now() - room.createdAt) / 1000), // 초 단위
     meetingCount: room.meetingCount,
     killCount:   room.killLog.length,
@@ -183,7 +184,7 @@ async function _updateWinRates(room) {
  */
 async function getUserHistory(userId) {
   const snap = await gameHistoryCol()
-    .where('players', 'array-contains', { userId })
+    .where('playerIds', 'array-contains', userId)
     .orderBy('playedAt', 'desc')
     .limit(20)
     .get();

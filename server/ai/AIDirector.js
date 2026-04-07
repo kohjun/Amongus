@@ -1,331 +1,201 @@
-// src/ai/AIDirector.js
-//
-// 역할: 게임 이벤트를 받아 LLM으로 실시간 해설/가이드 메시지를 생성
-//
-// 메시지 종류 두 가지:
-//   - 공개 해설 (ai_message)  : 전체 방에 브로드캐스트, gpt-4o-mini 사용 (빠름)
-//   - 개인 가이드 (ai_guide)  : 특정 플레이어에게만 전송, gpt-4o 사용 (정확)
-//
-// 원칙:
-//   - 크루원에게 임포스터 정보 절대 누설 금지
-//   - 모든 메시지는 3문장 이내, 한국어, 이모지 활용
-
+// server/ai/AIDirector.js v2
 'use strict';
 
-const { chat }                 = require('./LLMClient');
+const { chat }               = require('./LLMClient');
 const { SYSTEM_PROMPT, PROMPTS } = require('./prompt');
-const ProximitySystem          = require('../systems/ProximitySystem'); //(미구현)
+const ProximitySystem        = require('../systems/ProximitySystem');
+const { retrieve }           = require('./rag/ragRetriever');
+const GamePluginRegistry     = require('../games/GamePluginRegistry');
 
-// ── 개인 가이드 발송 간격 (ms) ─────────────────────────────
-const GUIDE_INTERVAL_MS = 60 * 1000; // 60초마다
+const GUIDE_INTERVAL_MS = 60 * 1000;
+const cooldowns         = new Map();
 
-// ── 쿨다운 관리 (같은 이벤트 중복 방지) ──────────────────────
-// { roomId_eventKey: lastCalledAt }
-const cooldowns = new Map();
-
-function isOnCooldown(roomId, eventKey, cooldownMs = 5000) {
-  const key  = `${roomId}_${eventKey}`;
+function isOnCooldown(key, ms = 5000) {
   const last = cooldowns.get(key) || 0;
-  if (Date.now() - last < cooldownMs) return true;
+  if (Date.now() - last < ms) return true;
   cooldowns.set(key, Date.now());
   return false;
 }
 
-// ── 내부 헬퍼: LLM 호출 래퍼 ─────────────────────────────────
-async function generate(prompt, model = 'fast') {
-  return chat({
-    prompt,
-    systemPrompt: SYSTEM_PROMPT,
-    model,
-    maxTokens: 150,
-  });
+// ── 대화 히스토리 ────────────────────────────────────
+const conversationHistory = new Map();
+const MAX_TURNS = 10;
+
+function getHistory(roomId, userId) {
+  const key = `${roomId}_${userId}`;
+  if (!conversationHistory.has(key)) conversationHistory.set(key, []);
+  return conversationHistory.get(key);
 }
 
-// ── 내부 헬퍼: 플레이어 주변 정보 조회 ───────────────────────
-function getNearbyInfo(room, player) {
-  const matrix  = ProximitySystem.getNearbyPlayers(room.roomId, player.userId, 8.0);
-  return matrix
-    .filter(({ playerId }) => {
-      const p = room.getPlayer(playerId);
-      return p && p.isAlive;
-    })
-    .map(({ playerId, distance }) => ({
-      nickname: room.getPlayer(playerId).nickname,
-      distance,
-    }));
+function addHistory(roomId, userId, role, content) {
+  const h = getHistory(roomId, userId);
+  h.push({ role, content });
+  if (h.length > MAX_TURNS * 2) h.splice(0, 2);
 }
 
-// ════════════════════════════════════════════════════════════
-//  공개 해설 메서드 (전체 방 브로드캐스트용)
-// ════════════════════════════════════════════════════════════
-
-/**
- * 게임 시작 인트로 멘트
- */
-async function onGameStart(room) {
-  const impostorCount = room.aliveImpostors.length;
-  const prompt = PROMPTS.gameStart(room.players.size, impostorCount);
-  return generate(prompt, 'fast');
+function clearHistory(roomId, userId) {
+  conversationHistory.delete(`${roomId}_${userId}`);
 }
 
-/**
- * 킬 발생 직후 분위기 멘트
- * (누가 죽었는지 공개 전 — 불길한 분위기만)
- */
-async function onKill(room, impostor, target) {
-  if (isOnCooldown(room.roomId, 'kill', 3000)) {
-    return '🔴 어둠 속에서 무언가 일어났습니다...';
-  }
+// ════════════════════════════════════════════════════
+//  RAG 기반 질의응답 (v2 핵심)
+// ════════════════════════════════════════════════════
 
-  const prompt = PROMPTS.kill(
-    target.nickname,
-    target.zone,
-    room.killLog.length,
-    room.aliveCrew.length,
-    room.aliveImpostors.length,
-  );
-  return generate(prompt, 'fast');
-}
+async function ask(room, player, question) {
+  try {
+    // 1. 플러그인 조회
+    const plugin = GamePluginRegistry.get(room.gameType);
 
-/**
- * 회의 소집 멘트 (시체 신고 or 긴급버튼)
- */
-async function onMeeting(room, caller, reason, body = null) {
-  let prompt;
+    // 2. 현재 페이즈 파악 (RAG 필터용)
+    const phase = plugin.getCurrentPhase(room);
 
-  if (reason === 'report' && body) {
-    prompt = PROMPTS.bodyReport(
-      caller.nickname,
-      body.nickname,
-      body.zone,
-      room.meetingCount,
+    // 3. RAG 검색 (game_type 격리 + 역할 필터 + 페이즈 필터 + 부모 fetch)
+    const { context, sources, found } = await retrieve(
+      question,
+      room.gameType,
+      player.team === 'impostor' ? 'impostor' : 'crew',
+      phase
     );
-  } else {
-    prompt = PROMPTS.emergencyMeeting(caller.nickname, room.meetingCount);
-  }
 
-  return generate(prompt, 'fast');
+    // 4. 동적 프롬프트 조립 (Plugin 위임)
+    const systemPrompt = [
+      plugin.getSystemPrompt(player.roleId, player.nickname),
+      found ? `\n[관련 게임 규칙]\n${context}` : '',
+      `\n[현재 게임 상황]\n${plugin.buildStateContext(room, player)}`,
+    ].join('\n');
+
+    // 5. 대화 히스토리 포함 Gemini 호출
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+    const genModel = genAI.getGenerativeModel({
+      model:             'gemini-2.5-flash',
+      systemInstruction: systemPrompt,
+    });
+
+    // OpenAI 형식(user/assistant) → Gemini 형식(user/model) 변환
+    const geminiHistory = getHistory(room.roomId, player.userId).map(msg => ({
+      role:  msg.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: msg.content }],
+    }));
+
+    const chatSession = genModel.startChat({
+      history:          geminiHistory,
+      generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
+    });
+
+    const res    = await chatSession.sendMessage(question);
+    const answer = res.response.text().trim();
+
+    // 6. 히스토리 저장 (내부 포맷은 OpenAI 호환 유지)
+    addHistory(room.roomId, player.userId, 'user',      question);
+    addHistory(room.roomId, player.userId, 'assistant', answer);
+
+    return { answer, sources };
+
+  } catch (e) {
+    console.error('[AIDirector.ask] 오류:', e.message);
+    return { answer: '죄송해요, 잠시 후 다시 물어봐주세요! 🙏', sources: [] };
+  }
 }
 
-/**
- * 토론 중반 유도 멘트 (30초 경과 후)
- */
+// ── 공개 해설 ─────────────────────────────────────────
+
+async function onGameStart(room) {
+  return chat({ prompt: PROMPTS.gameStart(room.players.size), systemPrompt: SYSTEM_PROMPT, model: 'fast' });
+}
+
+async function onKill(room, killer, target) {
+  if (isOnCooldown(`${room.roomId}_kill`, 3000)) return null;
+  return chat({ prompt: PROMPTS.kill(target.nickname, target.zone, room.killLog.length, room.aliveCrew?.length ?? 0), systemPrompt: SYSTEM_PROMPT, model: 'fast' });
+}
+
+async function onMeeting(room, caller, reason, body = null) {
+  const prompt = reason === 'report' && body
+    ? PROMPTS.bodyReport(caller.nickname, body.nickname, body.zone, room.meetingCount)
+    : PROMPTS.emergencyMeeting(caller.nickname, room.meetingCount);
+  return chat({ prompt, systemPrompt: SYSTEM_PROMPT, model: 'fast' });
+}
+
 async function onDiscussionGuide(room) {
   const alivePlayers = room.alivePlayers.map(p => p.nickname);
-  const progress     = {
-    percent: room.totalMissions === 0
-      ? 0
-      : Math.floor((room.completedMissions / room.totalMissions) * 100),
-  };
-
-  const prompt = PROMPTS.discussionGuide(
-    alivePlayers,
-    room.killLog,
-    progress,
-  );
-  return generate(prompt, 'fast');
+  const progress     = { percent: room.totalMissions === 0 ? 0 : Math.floor((room.completedMissions / room.totalMissions) * 100) };
+  return chat({ prompt: PROMPTS.discussionGuide(alivePlayers, room.killLog, progress), systemPrompt: SYSTEM_PROMPT, model: 'fast' });
 }
 
-/**
- * 투표 결과 멘트
- */
 async function onVoteResult(room, result, ejected) {
   let prompt;
-
-  if (!ejected) {
-    // 추방 없음 (동률 or SKIP)
-    prompt = PROMPTS.ejectNone(result.isTied);
-  } else if (result.wasImpostor) {
-    // 임포스터 추방 성공
-    prompt = PROMPTS.ejectImpostor(
-      ejected.nickname,
-      result.voteCount,
-      room.aliveImpostors.length,
-    );
-  } else {
-    // 크루원 오추방
-    prompt = PROMPTS.ejectCrew(ejected.nickname, result.voteCount);
-  }
-
-  return generate(prompt, 'fast');
+  if (!ejected)                prompt = PROMPTS.ejectNone(result.isTied);
+  else if (result.wasImpostor) prompt = PROMPTS.ejectImpostor(ejected.nickname, result.voteCount, room.aliveImpostors?.length ?? 0);
+  else                         prompt = PROMPTS.ejectCrew(ejected.nickname, result.voteCount);
+  return chat({ prompt, systemPrompt: SYSTEM_PROMPT, model: 'fast' });
 }
 
-/**
- * 미션 진행도 마일스톤 멘트 (25 / 50 / 75%)
- */
 async function onMissionMilestone(room, progress) {
-  if (isOnCooldown(room.roomId, `milestone_${progress.percent}`, 60000)) {
-    return null; // 중복 방지
-  }
-
-  const prompt = PROMPTS.missionMilestone(
-    progress.percent,
-    room.aliveCrew.length,
-    room.aliveImpostors.length,
-  );
-  return generate(prompt, 'fast');
+  if (isOnCooldown(`${room.roomId}_milestone_${progress.percent}`, 60000)) return null;
+  return chat({ prompt: PROMPTS.missionMilestone(progress.percent, room.aliveCrew?.length ?? 0), systemPrompt: SYSTEM_PROMPT, model: 'fast' });
 }
 
-/**
- * 게임 종료 멘트
- */
 async function onGameEnd(room, result) {
-  const impostors = room.aliveImpostors.map(p => p.nickname);
-
-  // 사망한 임포스터도 포함
-  const allImpostors = [...room.players.values()]
-    .filter(p => p.role === 'impostor')
-    .map(p => p.nickname);
-
-  let prompt;
-  if (result.winner === 'crew') {
-    prompt = PROMPTS.crewWin(result.reason, allImpostors);
-  } else {
-    prompt = PROMPTS.impostorWin(allImpostors);
-  }
-
-  return generate(prompt, 'fast');
+  const allImpostors = [...room.players.values()].filter(p => p.team === 'impostor').map(p => p.nickname);
+  const prompt = result.winner === 'crew'
+    ? PROMPTS.crewWin(result.reason, allImpostors)
+    : PROMPTS.impostorWin(allImpostors);
+  return chat({ prompt, systemPrompt: SYSTEM_PROMPT, model: 'fast' });
 }
 
-// ════════════════════════════════════════════════════════════
-//  개인 가이드 메서드 (특정 플레이어에게만 전송)
-// ════════════════════════════════════════════════════════════
+// ── 소켓 조회 헬퍼 ───────────────────────────────────
 
-/**
- * 크루원 개인 가이드 생성
- */
-async function generateCrewGuide(room, player) {
-  const nearby    = getNearbyInfo(room, player);
-  const progress  = {
-    percent: room.totalMissions === 0
-      ? 0
-      : Math.floor((room.completedMissions / room.totalMissions) * 100),
-  };
-
-  const pendingTasks = player.tasks.filter(t => t.status !== 'completed');
-
-  const prompt = PROMPTS.crewGuide(
-    player.nickname,
-    pendingTasks,
-    nearby,
-    room.killLog,
-    progress,
-  );
-
-  return generate(prompt, 'precise');
-}
-
-/**
- * 임포스터 개인 가이드 생성
- */
-async function generateImpostorGuide(room, player) {
-  const nearby   = getNearbyInfo(room, player);
-  const progress = {
-    percent: room.totalMissions === 0
-      ? 0
-      : Math.floor((room.completedMissions / room.totalMissions) * 100),
-  };
-
-  const aliveCrew = room.aliveCrew.map(p => p.nickname);
-
-  const prompt = PROMPTS.impostorGuide(
-    player.nickname,
-    aliveCrew,
-    nearby,
-    progress,
-    room.meetingCount,
-  );
-
-  return generate(prompt, 'precise');
-}
-
-// ════════════════════════════════════════════════════════════
-//  개인 가이드 스케줄러
-//  게임 시작 후 일정 간격으로 각 플레이어에게 개인 가이드 전송
-// ════════════════════════════════════════════════════════════
-
-/**
- * @param {GameRoom} room
- * @param {Server}   io    - Socket.IO 서버 인스턴스
- */
-function startGuideScheduler(room, io) {
-  const intervalHandle = setInterval(async () => {
-    // 게임 종료 시 스케줄러 중단
-    if (room.status === 'ended') {
-      clearInterval(intervalHandle);
-      return;
-    }
-
-    // 회의 중에는 가이드 발송 안 함
-    if (room.status === 'meeting') return;
-
-    for (const [, player] of room.players) {
-      if (!player.isAlive) continue;
-
-      try {
-        let message;
-
-        if (player.role === 'crew') {
-          message = await generateCrewGuide(room, player);
-        } else {
-          message = await generateImpostorGuide(room, player);
-        }
-
-        // 개인 가이드: 해당 소켓에만 전송
-        const socket = getSocket(io, player.userId);
-        if (socket && message) {
-          socket.emit('ai_guide', {
-            type:    player.role === 'crew' ? 'crew_guide' : 'impostor_guide',
-            message,
-          });
-        }
-      } catch (err) {
-        console.error(`[AIDirector] 개인 가이드 생성 실패 (${player.nickname}):`, err.message);
-      }
-    }
-  }, GUIDE_INTERVAL_MS);
-
-  // 방 객체에 핸들 저장 (외부에서 취소 가능)
-  room._guideScheduler = intervalHandle;
-}
-
-/**
- * 스케줄러 수동 중단 (게임 종료 시 GameEngine에서 호출 가능)
- */
-function stopGuideScheduler(room) {
-  if (room._guideScheduler) {
-    clearInterval(room._guideScheduler);
-    room._guideScheduler = null;
-  }
-}
-
-// ── 소켓 조회 헬퍼 ────────────────────────────────────────
 function getSocket(io, userId) {
-  for (const [, socket] of io.sockets.sockets) {
-    if (socket.userId === userId) return socket;
+  for (const [, s] of io.sockets.sockets) {
+    if (s.userId === userId) return s;
   }
   return null;
 }
 
-// ════════════════════════════════════════════════════════════
-//  exports
-// ════════════════════════════════════════════════════════════
+// ── 개인 가이드 ───────────────────────────────────────
+
+async function generateGuide(room, player) {
+  const plugin  = GamePluginRegistry.get(room.gameType);
+  const context = plugin.buildStateContext(room, player);
+  const role    = player.team === 'impostor' ? 'impostor' : 'crew';
+  const prompt  = role === 'crew'
+    ? PROMPTS.crewGuide(player.nickname, player.tasks?.filter(t => t.status !== 'completed'), [], room.killLog, { percent: 0 })
+    : PROMPTS.impostorGuide(player.nickname, room.aliveCrew?.map(p => p.nickname) ?? [], [], { percent: 0 }, room.meetingCount);
+  return chat({ prompt, systemPrompt: SYSTEM_PROMPT, model: 'precise' });
+}
+
+function startGuideScheduler(room, io) {
+  // io를 명시적으로 클로저에 캡처 — setInterval 콜백 내부에서 안전하게 참조
+  const _io = io;
+
+  const handle = setInterval(async () => {
+    if (room.status === 'ended')   { clearInterval(handle); return; }
+    if (room.status === 'meeting') return;
+
+    for (const [, player] of room.players) {
+      if (!player.isAlive) continue;
+      try {
+        const message = await generateGuide(room, player);
+        const s = getSocket(_io, player.userId);
+        const type = player.team === 'impostor' ? 'impostor_guide' : 'crew_guide';
+        if (s && message) s.emit('ai_guide', { type, message });
+      } catch (e) {
+        console.error(`[AIDirector] 가이드 실패 (${player.nickname}):`, e.message);
+      }
+    }
+  }, GUIDE_INTERVAL_MS);
+
+  room._guideScheduler = handle;
+}
+
+function stopGuideScheduler(room) {
+  if (room._guideScheduler) { clearInterval(room._guideScheduler); room._guideScheduler = null; }
+  for (const [, player] of room.players) clearHistory(room.roomId, player.userId);
+}
 
 module.exports = {
-  // 공개 해설
-  onGameStart,
-  onKill,
-  onMeeting,
-  onDiscussionGuide,
-  onVoteResult,
-  onMissionMilestone,
-  onGameEnd,
-
-  // 개인 가이드
-  generateCrewGuide,
-  generateImpostorGuide,
-
-  // 스케줄러
-  startGuideScheduler,
-  stopGuideScheduler,
+  ask,
+  onGameStart, onKill, onMeeting, onDiscussionGuide, onVoteResult,
+  onMissionMilestone, onGameEnd,
+  startGuideScheduler, stopGuideScheduler,
 };

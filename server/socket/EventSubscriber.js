@@ -146,7 +146,7 @@ function init(io) {
   // ── 투표 제출 알림 (익명) ─────────────────────────────
   EventBus.on('vote_submitted', ({ roomId, voterId }) => {
     try {
-      const { VoteSystem } = require('../systems/VoteSystem');
+      const VoteSystem = require('../systems/VoteSystem');
       const room  = require('../engine/GameEngine').getRoom(roomId);
       const voter = room.getPlayer(voterId);
 

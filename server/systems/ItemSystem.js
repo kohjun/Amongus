@@ -178,6 +178,18 @@ class ItemSystem {
     return true;
   }
 
+  // 특정 아이템 효과 차단 체크 (AbilityExecutor용)
+  // blockItemId에 해당하는 활성 효과가 있으면 소모 후 true 반환
+  checkBlock(room, target, blockItemId) {
+    const effects = this.getActiveEffects(room.roomId, target.userId);
+    const idx = effects.findIndex(e => e.itemId === blockItemId && !e.isExpired);
+    if (idx === -1) return false;
+
+    effects[idx].cancel();
+    effects.splice(idx, 1);
+    return true;
+  }
+
   // 변장 중인가? (탐지기에 안 잡힘)
   isDisguised(roomId, playerId) {
     return this.hasEffect(roomId, playerId, EFFECT_TYPE.DISGUISE);

@@ -13,17 +13,7 @@ import {
   Animated,
   Easing,
 } from 'react-native';
-
-interface MissionTask {
-  missionId:   string;
-  type:        'qr_scan' | 'mini_game' | 'stay';
-  title:       string;
-  description: string;
-  zone:        string;
-  status:      'pending' | 'in_progress' | 'completed' | 'failed';
-  isFake:      boolean;
-  stayConfig?: { requiredSeconds: number } | null;
-}
+import { MissionTask } from '../types/navigation';
 
 interface MissionListProps {
   tasks:       MissionTask[];
@@ -94,10 +84,11 @@ function MissionItem({ task, isCurrentZone }: { task: MissionTask; isCurrentZone
           <Text style={styles.itemZone}>{zoneLabel}</Text>
 
           {/* STAY 미션 진행바 */}
+          {/* 오류 4 수정: stayPercent는 JS number이므로 Animated.View 불필요 → View 사용 */}
           {task.type === 'stay' && isInProgress && (
             <View style={styles.stayBarWrap}>
               <View style={styles.stayBarBg}>
-                <Animated.View style={[styles.stayBarFill, { width: `${stayPercent}%` }]} />
+                <View style={[styles.stayBarFill, { width: `${stayPercent}%` }]} />
               </View>
               <Text style={styles.stayTime}>
                 {stayElapsed}s / {stayReq}s

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx expo:*)",
+      "Bash(sed -i 's|import { useAuth } from '\\\\''../hooks/useAuth'\\\\'';|import { useAuthContext } from '\\\\''../context/AuthContext'\\\\'';|g' C:/Users/kohju/OneDrive/Desktop/project/Amongus/client/src/screens/LoginScreen.tsx)",
+      "Bash(sed -i 's|const { signIn, signUp, signInWithGoogle, loading, error } = useAuth\\(\\);|const { signIn, signUp, signInWithGoogle, loading, error } = useAuthContext\\(\\);|g' C:/Users/kohju/OneDrive/Desktop/project/Amongus/client/src/screens/LoginScreen.tsx)"
+    ]
+  }
+}

@@ -1,15 +1,23 @@
-// src/engine/EventBus.js
-// 이벤트를 발생시키면 Socket, AI, 조건 체커가 각자 반응하는 구조
+// server/engine/EventBus.js
+//
+// 시스템 간 결합도를 낮추기 위한 중앙 이벤트 버스입니다.
+// 모든 시스템(GameEngine, VoteSystem, MissionSystem 등)이
+// 직접 서로를 참조하지 않고 이벤트로 통신합니다.
+//
+// 사용법:
+//   EventBus.emit('player_killed', { room, killer, target })
+//   EventBus.on('player_killed', ({ room, killer, target }) => { ... })
 
-const EventEmitter = require('events');
+'use strict';
 
-class EventBus extends EventEmitter {}
+const { EventEmitter } = require('events');
 
-const bus = new EventBus();
+class EventBus extends EventEmitter {
+  constructor() {
+    super();
+    // 리스너 수 경고 임계값 상향 (시스템이 많아질수록 리스너 수 증가)
+    this.setMaxListeners(50);
+  }
+}
 
-// 디버그용 로그
-bus.on('newListener', (event) => {
-  console.log(`[EventBus] 리스너 등록: ${event}`);
-});
-
-module.exports = bus;
+module.exports = new EventBus();

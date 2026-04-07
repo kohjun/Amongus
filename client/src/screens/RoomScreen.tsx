@@ -1,20 +1,15 @@
 // src/screens/RoomScreen.tsx
-//
-// 대기실 화면
-// - room_updated 소켓 수신 → 플레이어 목록 실시간 반영
-// - 방장만 게임 시작 버튼 활성화
-// - game_started 수신 → GameScreen 이동
+// 대기실 — room_updated 실시간 반영, 방장만 게임 시작 가능
 
 import React, { useState, useEffect } from 'react';
 import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
+  View, Text, TouchableOpacity, StyleSheet,
+  ActivityIndicator, Alert,
 } from 'react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { socket } from '../services/SocketService';
+import { gameStore } from '../store/gameStore';
+import { PlayerInfo } from '../types/navigation';
 
 interface Player {
   userId:   string;
@@ -30,52 +25,37 @@ interface RoomState {
   players:     Player[];
 }
 
-interface RoomScreenProps {
-  navigation: any;
-  route: {
-    params: {
-      roomId:  string;
-      isHost:  boolean;
-    };
-  };
-}
+const COLORS = [
+  '#00e676','#69f0ae','#40c4ff','#e040fb',
+  '#ffab40','#ff5252','#ea80fc','#64ffda',
+  '#ccff90','#ff6d00',
+];
 
-export default function RoomScreen({ navigation, route }: RoomScreenProps) {
-  const { roomId, isHost: initialIsHost } = route.params;
+export default function RoomScreen() {
+  const router = useRouter();
+  const { roomId, isHost: isHostParam } = useLocalSearchParams<{ roomId: string; isHost: string }>();
 
   const [room,     setRoom]     = useState<RoomState | null>(null);
-  const [isHost,   setIsHost]   = useState(initialIsHost);
+  const [isHost,   setIsHost]   = useState(isHostParam === 'true');
   const [starting, setStarting] = useState(false);
-  const [myInfo,   setMyInfo]   = useState<any>(null);
+  const [myInfo,   setMyInfo]   = useState<{ userId: string; nickname: string } | null>(null);
 
   useEffect(() => {
-    // 입장 시 본인 정보 수신
-    socket.on('joined', (playerInfo: any) => {
-      setMyInfo(playerInfo);
+    socket.on('joined', (info: { userId: string; nickname: string }) => {
+      setMyInfo(info);
     });
 
-    // 방 상태 실시간 업데이트
     socket.on('room_updated', (roomState: RoomState) => {
       setRoom(roomState);
-
-      // 내가 방장인지 재확인 (방장 위임 등 대비)
-      const me = roomState.players.find(p => p.userId === socket.id);
-      if (me) {
-        // TODO: 방장 위임 처리 (현재는 초기값 유지)
-      }
     });
 
-    // 게임 시작 — GameScreen으로 이동
-    socket.on('game_started', (privateInfo: any) => {
+    socket.on('game_started', (privateInfo: PlayerInfo) => {
       setStarting(false);
-      navigation.replace('Game', {
-        roomId,
-        playerInfo: privateInfo,
-      });
+      gameStore.setPlayerInfo(privateInfo);
+      router.replace({ pathname: '/(game)/game', params: { roomId } });
     });
 
-    socket.on('notification', (data: any) => {
-      // 입장/퇴장 알림 (필요 시 토스트로 표시 가능)
+    socket.on('notification', (data: { message: string }) => {
       console.log('[Room] notification:', data.message);
     });
 
@@ -85,51 +65,39 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
       socket.off('game_started');
       socket.off('notification');
     };
-  }, [navigation, roomId]);
+  }, [roomId]);
 
   function handleStartGame() {
     if (!room || room.playerCount < 4) {
       Alert.alert('인원 부족', '최소 4명이 있어야 게임을 시작할 수 있습니다.');
       return;
     }
-
     setStarting(true);
-    socket.emit('start_game', { roomId }, (res: any) => {
+    socket.emit('start_game', { roomId }, (res: { ok: boolean; error?: string }) => {
       if (!res.ok) {
         setStarting(false);
         Alert.alert('시작 실패', res.error);
       }
-      // 성공 시 game_started 이벤트로 이동
     });
   }
 
-  // ── 역할 색상 ────────────────────────────────────────────
   const canStart = isHost && (room?.playerCount ?? 0) >= 4 && !starting;
-
-  const COLORS = [
-    '#00e676', '#69f0ae', '#40c4ff', '#e040fb',
-    '#ffab40', '#ff5252', '#ea80fc', '#64ffda',
-    '#ccff90', '#ff6d00',
-  ];
 
   return (
     <View style={styles.root}>
-
-      {/* 헤더 */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backIcon}>←</Text>
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>대기실</Text>
           <View style={styles.roomIdPill}>
-            <Text style={styles.roomIdText}>{roomId.slice(0, 8).toUpperCase()}</Text>
+            <Text style={styles.roomIdText}>{roomId?.slice(0, 8).toUpperCase()}</Text>
           </View>
         </View>
         <View style={{ width: 40 }} />
       </View>
 
-      {/* 플레이어 인원 */}
       <View style={styles.countRow}>
         <Text style={styles.countNum}>{room?.playerCount ?? 0}</Text>
         <Text style={styles.countSlash}>/</Text>
@@ -137,7 +105,6 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
         <Text style={styles.countLabel}>   명 대기 중</Text>
       </View>
 
-      {/* 최소 인원 안내 */}
       {(room?.playerCount ?? 0) < 4 && (
         <View style={styles.minHint}>
           <Text style={styles.minHintText}>
@@ -146,7 +113,6 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
         </View>
       )}
 
-      {/* 플레이어 그리드 */}
       <View style={styles.grid}>
         {room?.players.map((player, i) => (
           <View key={player.userId} style={styles.playerCard}>
@@ -155,18 +121,12 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
                 {player.nickname[0]?.toUpperCase()}
               </Text>
             </View>
-            <Text style={styles.playerName} numberOfLines={1}>
-              {player.nickname}
-            </Text>
+            <Text style={styles.playerName} numberOfLines={1}>{player.nickname}</Text>
             {i === 0 && (
-              <View style={styles.hostBadge}>
-                <Text style={styles.hostBadgeText}>방장</Text>
-              </View>
+              <View style={styles.hostBadge}><Text style={styles.hostBadgeText}>방장</Text></View>
             )}
           </View>
         ))}
-
-        {/* 빈 슬롯 */}
         {Array.from({ length: Math.max(0, 10 - (room?.playerCount ?? 0)) }).map((_, i) => (
           <View key={`empty-${i}`} style={[styles.playerCard, styles.playerCardEmpty]}>
             <View style={styles.playerAvatarEmpty}>
@@ -177,17 +137,13 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
         ))}
       </View>
 
-      {/* 게임 설명 */}
       <View style={styles.infoBox}>
         <Text style={styles.infoTitle}>게임 안내</Text>
         <Text style={styles.infoText}>
-          • 크루원: 미션을 완료하거나 임포스터를 추방하세요{'\n'}
-          • 임포스터: 크루원을 제거하고 방해하세요{'\n'}
-          • UWB/BLE로 실제 위치가 감지됩니다
+          {'• 크루원: 미션을 완료하거나 임포스터를 추방하세요\n• 임포스터: 크루원을 제거하고 방해하세요\n• UWB/BLE로 실제 위치가 감지됩니다'}
         </Text>
       </View>
 
-      {/* 시작 버튼 (방장만) / 대기 메시지 */}
       <View style={styles.footer}>
         {isHost ? (
           <TouchableOpacity
@@ -196,11 +152,9 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
             disabled={!canStart}
             activeOpacity={0.85}
           >
-            {starting ? (
-              <ActivityIndicator color="#0a0a0a" />
-            ) : (
-              <Text style={styles.startBtnText}>게임 시작</Text>
-            )}
+            {starting
+              ? <ActivityIndicator color="#0a0a0a" />
+              : <Text style={styles.startBtnText}>게임 시작</Text>}
           </TouchableOpacity>
         ) : (
           <View style={styles.waitingBox}>
@@ -209,220 +163,44 @@ export default function RoomScreen({ navigation, route }: RoomScreenProps) {
           </View>
         )}
       </View>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex:            1,
-    backgroundColor: '#0a0a0a',
-  },
-
-  // 헤더
-  header: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    paddingTop:      56,
-    paddingBottom:   16,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1a1a1a',
-  },
-  backBtn: {
-    width:  40,
-    height: 40,
-    alignItems:  'center',
-    justifyContent: 'center',
-  },
-  backIcon: {
-    fontSize: 20,
-    color:    '#888',
-  },
-  headerCenter: {
-    flex:       1,
-    alignItems: 'center',
-    gap:        6,
-  },
-  headerTitle: {
-    fontSize:   18,
-    fontWeight: '700',
-    color:      '#f0f0f0',
-  },
-  roomIdPill: {
-    backgroundColor: '#1a1a1a',
-    borderRadius:    6,
-    paddingHorizontal: 8,
-    paddingVertical:   3,
-  },
-  roomIdText: {
-    fontSize:      11,
-    color:         '#555',
-    letterSpacing: 1.5,
-  },
-
-  // 인원 표시
-  countRow: {
-    flexDirection: 'row',
-    alignItems:    'flex-end',
-    paddingHorizontal: 20,
-    paddingVertical:   20,
-  },
-  countNum: {
-    fontSize:   48,
-    fontWeight: '700',
-    color:      '#00e676',
-    lineHeight: 52,
-  },
-  countSlash: {
-    fontSize:   32,
-    color:      '#2a2a2a',
-    lineHeight: 48,
-    marginHorizontal: 4,
-  },
-  countMax: {
-    fontSize:   32,
-    color:      '#2a2a2a',
-    lineHeight: 48,
-  },
-  countLabel: {
-    fontSize:    14,
-    color:       '#444',
-    lineHeight:  48,
-    marginBottom: 2,
-  },
-
-  // 최소 인원 안내
-  minHint: {
-    marginHorizontal: 20,
-    marginBottom:     12,
-    backgroundColor:  '#1a1200',
-    borderRadius:     8,
-    paddingHorizontal: 12,
-    paddingVertical:   8,
-    borderWidth:       1,
-    borderColor:       '#2a2200',
-  },
-  minHintText: {
-    fontSize: 12,
-    color:    '#886600',
-  },
-
-  // 플레이어 그리드
-  grid: {
-    flexDirection:   'row',
-    flexWrap:        'wrap',
-    paddingHorizontal: 16,
-    gap:             10,
-    flex:            1,
-  },
-  playerCard: {
-    width:          '18%',
-    aspectRatio:    0.85,
-    alignItems:     'center',
-    justifyContent: 'center',
-    gap:            6,
-  },
-  playerCardEmpty: {
-    opacity: 0.3,
-  },
-  playerAvatar: {
-    width:           44,
-    height:          44,
-    borderRadius:    22,
-    backgroundColor: '#111',
-    borderWidth:     2,
-    alignItems:      'center',
-    justifyContent:  'center',
-  },
-  playerInitial: {
-    fontSize:   18,
-    fontWeight: '700',
-  },
-  playerAvatarEmpty: {
-    width:           44,
-    height:          44,
-    borderRadius:    22,
-    backgroundColor: '#111',
-    borderWidth:     1,
-    borderColor:     '#1e1e1e',
-    borderStyle:     'dashed',
-    alignItems:      'center',
-    justifyContent:  'center',
-  },
-  playerAvatarEmptyIcon: {
-    fontSize: 18,
-    color:    '#2a2a2a',
-  },
-  playerName: {
-    fontSize:  10,
-    color:     '#888',
-    textAlign: 'center',
-  },
-  playerNameEmpty: {
-    fontSize:  10,
-    color:     '#2a2a2a',
-  },
-  hostBadge: {
-    backgroundColor:  '#1a2a1a',
-    borderRadius:     4,
-    paddingHorizontal: 4,
-    paddingVertical:   2,
-  },
-  hostBadgeText: {
-    fontSize: 9,
-    color:    '#00e676',
-  },
-
-  // 안내
-  infoBox: {
-    margin:          16,
-    backgroundColor: '#111',
-    borderRadius:    12,
-    padding:         14,
-    borderWidth:     1,
-    borderColor:     '#1e1e1e',
-    gap:             6,
-  },
-  infoTitle: {
-    fontSize:   13,
-    fontWeight: '600',
-    color:      '#888',
-  },
-  infoText: {
-    fontSize:   12,
-    color:      '#444',
-    lineHeight: 20,
-  },
-
-  // 푸터
-  footer: {
-    padding: 16,
-  },
-  startBtn: {
-    backgroundColor: '#00e676',
-    borderRadius:    14,
-    paddingVertical: 16,
-    alignItems:      'center',
-  },
-  startBtnDisabled: {
-    backgroundColor: '#0a2a1a',
-  },
-  startBtnText: {
-    fontSize:   17,
-    fontWeight: '700',
-    color:      '#0a0a0a',
-  },
-  waitingBox: {
-    flexDirection:  'row',
-    alignItems:     'center',
-    justifyContent: 'center',
-    gap:            10,
-    paddingVertical: 16,
-  },
-  waitingText: {
-    fontSize: 13,
-    color:    '#333',
-  },
+  root:                { flex: 1, backgroundColor: '#0a0a0a' },
+  header:              { flexDirection: 'row', alignItems: 'center', paddingTop: 56, paddingBottom: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
+  backBtn:             { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  backIcon:            { fontSize: 20, color: '#888' },
+  headerCenter:        { flex: 1, alignItems: 'center', gap: 6 },
+  headerTitle:         { fontSize: 18, fontWeight: '700', color: '#f0f0f0' },
+  roomIdPill:          { backgroundColor: '#1a1a1a', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 3 },
+  roomIdText:          { fontSize: 11, color: '#555', letterSpacing: 1.5 },
+  countRow:            { flexDirection: 'row', alignItems: 'flex-end', paddingHorizontal: 20, paddingVertical: 20 },
+  countNum:            { fontSize: 48, fontWeight: '700', color: '#00e676', lineHeight: 52 },
+  countSlash:          { fontSize: 32, color: '#2a2a2a', lineHeight: 48, marginHorizontal: 4 },
+  countMax:            { fontSize: 32, color: '#2a2a2a', lineHeight: 48 },
+  countLabel:          { fontSize: 14, color: '#444', lineHeight: 48, marginBottom: 2 },
+  minHint:             { marginHorizontal: 20, marginBottom: 12, backgroundColor: '#1a1200', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, borderWidth: 1, borderColor: '#2a2200' },
+  minHintText:         { fontSize: 12, color: '#886600' },
+  grid:                { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, gap: 10, flex: 1 },
+  playerCard:          { width: '18%', aspectRatio: 0.85, alignItems: 'center', justifyContent: 'center', gap: 6 },
+  playerCardEmpty:     { opacity: 0.3 },
+  playerAvatar:        { width: 44, height: 44, borderRadius: 22, backgroundColor: '#111', borderWidth: 2, alignItems: 'center', justifyContent: 'center' },
+  playerInitial:       { fontSize: 18, fontWeight: '700' },
+  playerAvatarEmpty:   { width: 44, height: 44, borderRadius: 22, backgroundColor: '#111', borderWidth: 1, borderColor: '#1e1e1e', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center' },
+  playerAvatarEmptyIcon:{ fontSize: 18, color: '#2a2a2a' },
+  playerName:          { fontSize: 10, color: '#888', textAlign: 'center' },
+  playerNameEmpty:     { fontSize: 10, color: '#2a2a2a' },
+  hostBadge:           { backgroundColor: '#1a2a1a', borderRadius: 4, paddingHorizontal: 4, paddingVertical: 2 },
+  hostBadgeText:       { fontSize: 9, color: '#00e676' },
+  infoBox:             { margin: 16, backgroundColor: '#111', borderRadius: 12, padding: 14, borderWidth: 1, borderColor: '#1e1e1e', gap: 6 },
+  infoTitle:           { fontSize: 13, fontWeight: '600', color: '#888' },
+  infoText:            { fontSize: 12, color: '#444', lineHeight: 20 },
+  footer:              { padding: 16 },
+  startBtn:            { backgroundColor: '#00e676', borderRadius: 14, paddingVertical: 16, alignItems: 'center' },
+  startBtnDisabled:    { backgroundColor: '#0a2a1a' },
+  startBtnText:        { fontSize: 17, fontWeight: '700', color: '#0a0a0a' },
+  waitingBox:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, paddingVertical: 16 },
+  waitingText:         { fontSize: 13, color: '#333' },
 });

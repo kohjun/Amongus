@@ -22,6 +22,9 @@ function getSocketByUserId(io, userId) {
   return null;
 }
 
+// 재연결 대기 타이머 맵 { userId → TimeoutHandle }
+const reconnectTimers = new Map();
+
 // ════════════════════════════════════════════════════════
 //  register(socket, io)
 //  app.js의 io.on('connection', ...) 안에서 호출됩니다.
@@ -29,6 +32,13 @@ function getSocketByUserId(io, userId) {
 // ════════════════════════════════════════════════════════
 
 function register(socket, io) {
+
+  // 재연결 감지: 이전 disconnect 타이머가 있으면 취소
+  if (reconnectTimers.has(socket.userId)) {
+    clearTimeout(reconnectTimers.get(socket.userId));
+    reconnectTimers.delete(socket.userId);
+    console.log(`[SocketHandler] 재연결 감지: ${socket.nickname}`);
+  }
 
   // ── 방 생성 ────────────────────────────────────────────
   socket.on('create_room', ({ settings }, cb) => {
@@ -51,6 +61,23 @@ function register(socket, io) {
   // ── 방 입장 ────────────────────────────────────────────
   socket.on('join_room', ({ roomId }, cb) => {
     try {
+      // 재연결: 게임 중인 방에 이미 플레이어가 존재하는 경우 소켓만 교체
+      const existingRoom = GameEngine.rooms.get(roomId);
+      if (existingRoom && existingRoom.status !== 'waiting') {
+        const player = existingRoom.getPlayer(socket.userId);
+        if (player) {
+          player.socketId = socket.id;
+          socket.join(roomId);
+          socket.emit('reconnected', player.toPrivateInfo());
+          io.to(roomId).emit('notification', {
+            type:    'player_reconnected',
+            message: `${player.nickname}님이 재연결됐습니다.`,
+          });
+          cb({ ok: true, reconnected: true });
+          return;
+        }
+      }
+
       const { room, player } = GameEngine.joinRoom(roomId, {
         userId:   socket.userId,
         nickname: socket.nickname,
@@ -334,7 +361,74 @@ function register(socket, io) {
   // ── 연결 해제 ─────────────────────────────────────────
   socket.on('disconnect', (reason) => {
     console.log(`[Socket] 해제: ${socket.id} | ${socket.nickname} | ${reason}`);
-    // TODO: 게임 중 이탈 처리 (reconnect grace period)
+
+    const { userId, nickname } = socket;
+
+    // 게임 진행 중인 방 탐색
+    const room = [...GameEngine.rooms.values()].find(r => r.players.has(userId));
+    if (!room || room.status === 'waiting' || room.status === 'ended') return;
+
+    const player = room.getPlayer(userId);
+    if (!player) return;
+
+    // 재연결 대기 알림
+    io.to(room.roomId).emit('notification', {
+      type:    'player_reconnecting',
+      message: `${nickname}님 연결이 끊겼습니다. 30초 내 재연결을 기다립니다.`,
+    });
+
+    // 30초 reconnect grace period
+    const timer = setTimeout(() => {
+      reconnectTimers.delete(userId);
+
+      // 재연결 여부 확인
+      if (getSocketByUserId(io, userId)) return;
+
+      // ── 사망 처리 ───────────────────────────────────────
+      if (player.isAlive) {
+        player.die();
+        room.killLog.push({
+          killerId:  'disconnect',
+          targetId:  userId,
+          zone:      player.zone,
+          timestamp: Date.now(),
+        });
+        io.to(room.roomId).emit('notification', {
+          type:    'player_disconnected',
+          message: `${nickname}님이 게임 도중 퇴장했습니다.`,
+        });
+
+        // 승리 조건 체크
+        const winResult = room.checkWinCondition();
+        if (winResult) {
+          GameEngine.endGame(room.roomId, winResult);
+          return;
+        }
+      }
+
+      // ── 방장 이전 ───────────────────────────────────────
+      if (room.hostId === userId) {
+        const nextPlayer = [...room.players.values()].find(
+          p => p.userId !== userId && getSocketByUserId(io, p.userId)
+        );
+        if (nextPlayer) {
+          room.hostId       = nextPlayer.userId;
+          nextPlayer.isHost = true;
+          const newHostSocket = getSocketByUserId(io, nextPlayer.userId);
+          if (newHostSocket) {
+            newHostSocket.emit('host_transferred', {
+              message: '방장이 되었습니다.',
+            });
+          }
+          io.to(room.roomId).emit('notification', {
+            type:    'host_changed',
+            message: `${nextPlayer.nickname}님이 새 방장이 됩니다.`,
+          });
+        }
+      }
+    }, 30_000);
+
+    reconnectTimers.set(userId, timer);
   });
 }
 

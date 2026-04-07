@@ -16,12 +16,14 @@ import {
   Animated,
   Easing,
 } from 'react-native';
-import { useAuth } from '../hooks/useAuth';
+import { useAuthContext } from '../context/AuthContext';
+
+const AnimatedView = Animated.createAnimatedComponent(View);
 
 type Mode = 'login' | 'signup';
 
 export default function LoginScreen() {
-  const { signIn, signUp, signInWithGoogle, loading, error } = useAuth();
+  const { signIn, signUp, signInWithGoogle, loading, error } = useAuthContext();
 
   const [mode,     setMode]     = useState<Mode>('login');
   const [email,    setEmail]    = useState('');
@@ -86,7 +88,7 @@ export default function LoginScreen() {
               회원가입
             </Text>
           </TouchableOpacity>
-          <Animated.View style={[styles.tabUnderline, { left: underlineLeft }]} />
+          <AnimatedView style={[styles.tabUnderline, { left: underlineLeft }]} />
         </View>
 
         {/* 에러 메시지 */}

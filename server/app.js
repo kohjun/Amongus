@@ -18,22 +18,45 @@ require('./auth/firebaseAdmin');
 const express         = require('express');
 const http            = require('http');
 const { Server }      = require('socket.io');
+const cors            = require('cors');
 
 const SocketHandler             = require('./socket/SocketHandler');
 const EventSubscriber           = require('./socket/EventSubscriber');
 const authRouter                = require('./auth/authRouter');
 const { socketAuthMiddleware }  = require('./auth/jwtMiddleware');
 
+// ── 게임 플러그인 등록 ────────────────────────────────────
+// startGame() 이전에 반드시 registry에 등록되어야 합니다.
+const GamePluginRegistry = require('./games/GamePluginRegistry');
+GamePluginRegistry.register(require('./games/plugins/AmongUsPlugin'));
+
 const app    = express();
 const server = http.createServer(app);
 const io     = new Server(server, {
   cors: {
-    origin:  process.env.CLIENT_ORIGIN || '*',
-    methods: ['GET', 'POST'],
+    origin:      process.env.CLIENT_ORIGIN
+                   ? process.env.CLIENT_ORIGIN.split(',').map(o => o.trim())
+                   : ['http://localhost:8081', 'http://localhost:3000'],
+    methods:     ['GET', 'POST'],
+    credentials: true,
   },
 });
 
 // ── Express 미들웨어 ─────────────────────────────────────
+const ALLOWED_ORIGINS = (process.env.CLIENT_ORIGIN || 'http://localhost:8081')
+  .split(',')
+  .map(o => o.trim());
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // 서버 간 요청(origin 없음) 또는 허용 목록에 있으면 통과
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return callback(null, true);
+    callback(new Error(`CORS: ${origin} 허용되지 않음`));
+  },
+  methods:     ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true,
+}));
+
 app.use(express.json());
 
 // ── REST API ─────────────────────────────────────────────

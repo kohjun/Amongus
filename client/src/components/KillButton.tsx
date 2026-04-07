@@ -1,51 +1,55 @@
 // client/src/components/KillButton.tsx
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { TouchableOpacity, Text, StyleSheet, Animated } from 'react-native';
 import { socket } from '../services/SocketService';
 
-interface Props {
-  roomId:    string;
-  myUserId:  string;
-  aliveCrew: { userId: string; nickname: string }[];
+// ── 오류 1·4 수정: Props를 GameScreen 호출 시그니처에 맞게 수정 ──
+interface KillableTarget {
+  playerId: string;
+  nickname: string;
+  distance: number;
+  method:   string;
 }
 
-export default function KillButton({ roomId, myUserId, aliveCrew }: Props) {
-  const [killableTargets, setKillableTargets] = useState<any[]>([]);
-  const [cooldown, setCooldown]               = useState(0);
-  const pulse = new Animated.Value(1);
+interface Props {
+  roomId:          string;
+  killableTargets: KillableTarget[];
+}
+
+export default function KillButton({ roomId, killableTargets }: Props) {
+  const [cooldown, setCooldown] = useState<number>(0);
+
+  // 오류 4 수정: new Animated.Value() → useRef로 안정적 참조 확보
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
-    // 서버에서 실시간으로 킬 가능 대상 업데이트
-    socket.on('killable_targets', ({ targets }) => {
-      setKillableTargets(targets);
-
-      // 킬 가능 대상 있으면 버튼 맥박 애니메이션
-      if (targets.length > 0) {
-        Animated.loop(
-          Animated.sequence([
-            Animated.timing(pulse, { toValue: 1.1, duration: 400, useNativeDriver: true }),
-            Animated.timing(pulse, { toValue: 1.0, duration: 400, useNativeDriver: true }),
-          ])
-        ).start();
-      }
-    });
-
-    return () => { socket.off('killable_targets'); };
-  }, []);
+    if (killableTargets.length > 0) {
+      // 킬 가능 대상 있으면 맥박 애니메이션
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.1, duration: 400, useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1.0, duration: 400, useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.stopAnimation();
+      pulseAnim.setValue(1);
+    }
+  }, [killableTargets, pulseAnim]);
 
   // 쿨다운 타이머
   useEffect(() => {
     if (cooldown <= 0) return;
-    const timer = setInterval(() => setCooldown(c => c - 1), 1000);
+    // 오류 2 예방: c는 useState<number>에서 number로 추론
+    const timer = setInterval(() => setCooldown((c: number) => c - 1), 1000);
     return () => clearInterval(timer);
   }, [cooldown]);
 
   const handleKill = (targetId: string) => {
-    socket.emit('kill', { roomId, impostorId: myUserId, targetId }, (res: any) => {
+    socket.emit('kill', { roomId, targetId }, (res: { ok: boolean; error?: string }) => {
       if (res.ok) {
-        setCooldown(30);  // 30초 쿨다운
-        setKillableTargets([]);
+        setCooldown(30);
       } else {
         alert(res.error);
       }
@@ -56,7 +60,6 @@ export default function KillButton({ roomId, myUserId, aliveCrew }: Props) {
 
   return (
     <>
-      {/* 킬 가능 대상 목록 */}
       {canKill && killableTargets.map(target => (
         <TouchableOpacity
           key={target.playerId}
@@ -69,8 +72,8 @@ export default function KillButton({ roomId, myUserId, aliveCrew }: Props) {
         </TouchableOpacity>
       ))}
 
-      {/* 메인 킬 버튼 */}
-      <Animated.View style={{ transform: [{ scale: canKill ? pulse : 1 }] }}>
+      {/* 오류 4 수정: pulseAnim은 useRef로 안정된 Animated.Value → Animated.View 타입 정상 */}
+      <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
         <TouchableOpacity
           style={[styles.killButton, !canKill && styles.disabled]}
           disabled={!canKill}
@@ -112,3 +115,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
 });
+function alert(message: string | undefined) {
+  console.warn(message);
+}
+

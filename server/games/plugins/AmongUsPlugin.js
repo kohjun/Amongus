@@ -59,9 +59,8 @@ class AmongUsPlugin extends GamePlugin {
 
   // ── 역할 배정 ─────────────────────────────────────
   assignRoles(players) {
-    const all      = [...players];
-    const count    = all.length <= 6 ? 1 : 2;
-    const shuffled = all.sort(() => Math.random() - 0.5);
+    const count    = players.length <= 6 ? 1 : 2;
+    const shuffled = [...players].sort(() => Math.random() - 0.5);
     const result   = new Map();
 
     shuffled.forEach((player, i) => {
