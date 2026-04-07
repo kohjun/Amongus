@@ -34,20 +34,29 @@ class ProximityService {
 
   // ── 초기화 ─────────────────────────────────────────────
   async init(roomId: string, myUserId: string) {
-    this.roomId   = roomId;
-    this.myUserId = myUserId;
+  this.roomId   = roomId;
+  this.myUserId = myUserId;
 
-    // UWB 초기화 시도
-    try {
-      if (Platform.OS === 'ios') {
-        await this.initUWBiOS();
-      } else {
-        await this.initUWBAndroid();
-      }
-    } catch (e) {
-      console.log('[Proximity] UWB 불가 → BLE 전환');
+  // 추가: 웹 환경일 경우 근접 감지 기능을 실행하지 않고 종료합니다.
+  if (Platform.OS === 'web') {
+    console.log('[Proximity] 웹 환경에서는 근접 감지 기능이 지원되지 않습니다.');
+    return;
+  }
+
+  // UWB 초기화 시도
+  try {
+    if (Platform.OS === 'ios') {
+      await this.initUWBiOS();
+    } else {
+      await this.initUWBAndroid();
+    }
+  } catch (e) {
+    console.log('[Proximity] UWB 불가 → BLE 전환');
+    // 웹 환경에서는 UWBManager가 없어 여기서 에러가 났던 것입니다.
+    if (UWBManager) {
       UWBManager.startBLEScan();
     }
+  }
 
     // 근접 업데이트 수신
     this.listeners.push(

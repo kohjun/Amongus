@@ -9,10 +9,7 @@
 
 import { io, Socket } from 'socket.io-client';
 
-// React Native 전역 선언
-declare const __DEV__: boolean;
-
-const SERVER_URL = (process.env['EXPO_PUBLIC_SERVER_URL'] as string | undefined) ?? 'http://localhost:3000';
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL ?? 'http://localhost:3000';
 
 // connect: false — JWT 토큰을 받기 전에 자동 연결하지 않습니다.
 // useAuth에서 토큰 세팅 후 수동으로 socket.connect()를 호출합니다.

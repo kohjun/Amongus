@@ -5,7 +5,7 @@
 //   - 웹: localStorage
 //   - 네이티브: 모듈 레벨 인메모리 (Firebase Auth 세션은 인메모리 퍼시스턴스로 유지)
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -14,7 +14,10 @@ import {
   signOut,
   User,
 } from 'firebase/auth';
-import { io, Socket } from 'socket.io-client';
+import { Socket } from 'socket.io-client';
+
+// 공통 싱글톤 소켓 임포트
+import { socket } from '../services/SocketService'; 
 import { firebaseAuth } from '../services/firebaseConfig';
 
 const SERVER_URL = (process.env['EXPO_PUBLIC_SERVER_URL'] as string | undefined) ?? 'http://localhost:3000';
@@ -42,46 +45,36 @@ interface UserInfo {
   stats?:   Record<string, number>;
 }
 
-type AppSocket = ReturnType<typeof io>;
-
 // ── 훅 ───────────────────────────────────────────────────────────
 export function useAuth() {
   const [user,    setUser]    = useState<UserInfo | null>(null);
-  const [socket,  setSocket]  = useState<AppSocket | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error,   setError]   = useState<string | null>(null);
 
-  const socketRef = useRef<AppSocket | null>(null);
-
   // ── 소켓 연결 ────────────────────────────────────────────────
-  const connectSocket = useCallback((token: string): AppSocket => {
-    if (socketRef.current) {
-      socketRef.current.disconnect();
+  const connectSocket = useCallback((token: string) => {
+    if (socket.connected) {
+      socket.disconnect();
     }
 
-    const newSocket = io(SERVER_URL, {
-      auth:                 { token },
-      transports:           ['websocket'],
-      reconnection:         true,
-      reconnectionDelay:    1000,
-      reconnectionAttempts: 5,
+    // 싱글톤 소켓에 인증 토큰 주입 후 연결
+    socket.auth = { token };
+    socket.connect();
+
+    // 이벤트 리스너 중복 등록 방지를 위해 기존 리스너 제거 후 등록
+    socket.off('connect');
+    socket.on('connect', () => {
+      console.log('[Socket] 연결 완료:', socket.id);
     });
 
-    newSocket.on('connect', () => {
-      console.log('[Socket] 연결 완료:', newSocket.id);
-    });
-
-    newSocket.on('connect_error', (err: Error) => {
+    socket.off('connect_error');
+    socket.on('connect_error', (err: Error) => {
       console.error('[Socket] 연결 오류:', err.message);
       if (err.message.includes('AUTH_EXPIRED')) {
         handleSignOut();
       }
     });
-
-    socketRef.current = newSocket;
-    setSocket(newSocket);
-    return newSocket;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Firebase ID Token → 게임 JWT 교환 ─────────────────────
   const exchangeToken = useCallback(async (firebaseUser: User) => {
@@ -117,8 +110,7 @@ export function useAuth() {
           connectSocket(token);
         } else {
           setUser(null);
-          if (socketRef.current) socketRef.current.disconnect();
-          setSocket(null);
+          socket.disconnect();
           jwtStore.remove();
         }
       } catch (err: unknown) {
@@ -139,7 +131,6 @@ export function useAuth() {
     setError(null);
     try {
       await signInWithEmailAndPassword(firebaseAuth, email, password);
-      // onAuthStateChanged가 JWT 교환 + 소켓 연결까지 처리
     } catch (err: unknown) {
       const code = (err as { code?: string }).code ?? '';
       setError(_parseFirebaseError(code));
@@ -154,7 +145,6 @@ export function useAuth() {
     try {
       const { user: fbUser } = await createUserWithEmailAndPassword(firebaseAuth, email, password);
       if (displayName) await updateProfile(fbUser, { displayName });
-      // onAuthStateChanged가 이후 처리
     } catch (err: unknown) {
       const code = (err as { code?: string }).code ?? '';
       setError(_parseFirebaseError(code));
@@ -169,8 +159,7 @@ export function useAuth() {
 
   // ── 로그아웃 ─────────────────────────────────────────────
   const handleSignOut = useCallback(async () => {
-    if (socketRef.current) socketRef.current.disconnect();
-    setSocket(null);
+    socket.disconnect();
     setUser(null);
     jwtStore.remove();
     await signOut(firebaseAuth);
@@ -179,7 +168,7 @@ export function useAuth() {
   // ── 언마운트 시 소켓 정리 ────────────────────────────────
   useEffect(() => {
     return () => {
-      if (socketRef.current) socketRef.current.disconnect();
+      socket.disconnect();
     };
   }, []);
 
@@ -191,7 +180,7 @@ export function useAuth() {
     signIn,
     signUp,
     signInWithGoogle,
-    signOut:         handleSignOut,
+    signOut: handleSignOut,
     isAuthenticated: !!user,
   };
 }

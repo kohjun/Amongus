@@ -1,5 +1,5 @@
 // src/screens/RoomScreen.tsx
-// 대기실 — room_updated 실시간 반영, 방장만 게임 시작 가능
+// 대기실 — room_updated 실시간 반영, 방장만 게임 시작 가능, 초기 상태 동기화 추가
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -31,16 +31,31 @@ const COLORS = [
   '#ccff90','#ff6d00',
 ];
 
+const SERVER_URL = (process.env['EXPO_PUBLIC_SERVER_URL'] as string | undefined) ?? 'http://localhost:3000';
+
 export default function RoomScreen() {
   const router = useRouter();
   const { roomId, isHost: isHostParam } = useLocalSearchParams<{ roomId: string; isHost: string }>();
 
   const [room,     setRoom]     = useState<RoomState | null>(null);
-  const [isHost,   setIsHost]   = useState(isHostParam === 'true');
   const [starting, setStarting] = useState(false);
   const [myInfo,   setMyInfo]   = useState<{ userId: string; nickname: string } | null>(null);
 
+  // 수정 1: useState를 제거하고 파라미터에서 직접 값을 도출 (파라미터가 늦게 들어와도 즉시 렌더링에 반영됨)
+  const isHost = isHostParam === 'true';
+
   useEffect(() => {
+    // 수정 2: 로딩 중 소켓 방송을 놓치는 타이밍 문제를 방지하기 위해 초기 진입 시 방 상태를 한번 당겨옵니다.
+    if (roomId) {
+      fetch(`${SERVER_URL}/rooms`)
+        .then(res => res.json())
+        .then(rooms => {
+          const currentRoom = rooms.find((r: RoomState) => r.roomId === roomId);
+          if (currentRoom) setRoom(currentRoom);
+        })
+        .catch(err => console.error('[Room] 초기 상태 로드 실패:', err));
+    }
+
     socket.on('joined', (info: { userId: string; nickname: string }) => {
       setMyInfo(info);
     });
@@ -81,6 +96,7 @@ export default function RoomScreen() {
     });
   }
 
+  // 이제 isHost 값이 정확하므로 4명이 차면 방장의 버튼이 정상적으로 활성화됩니다.
   const canStart = isHost && (room?.playerCount ?? 0) >= 4 && !starting;
 
   return (

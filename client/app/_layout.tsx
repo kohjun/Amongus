@@ -1,10 +1,8 @@
-// app/_layout.tsx
-// 루트 레이아웃 — 인증 상태에 따른 리다이렉트 처리
-// AuthProvider로 앱 전체를 감싸고, 인증 여부에 따라 (auth) / (game) 그룹으로 분기
+// app/_layout.tsx (수정본)
 
-import React, { useEffect } from 'react';
-import { StatusBar }              from 'react-native';
-import { Slot, useRouter, useSegments } from 'expo-router';
+import React from 'react';
+import { StatusBar } from 'react-native';
+import { Slot, useSegments, Redirect } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { AuthProvider, useAuthContext } from '../src/context/AuthContext';
@@ -12,25 +10,23 @@ import { AuthProvider, useAuthContext } from '../src/context/AuthContext';
 // ── 인증 가드 (AuthProvider 내부에서 실행) ───────────────────
 function RootLayoutNav() {
   const { user, loading } = useAuthContext();
-  const segments           = useSegments();
-  const router             = useRouter();
-
-  useEffect(() => {
-    if (loading) return;
-
-    const inAuth = segments[0] === '(auth)';
-
-    if (!user && !inAuth) {
-      // 비로그인 상태에서 게임 경로 접근 → 로그인으로
-      router.replace('/(auth)/login');
-    } else if (user && inAuth) {
-      // 로그인 완료 후 인증 경로 → 로비로
-      router.replace('/(game)/lobby');
-    }
-  }, [user, loading, segments]);
+  const segments = useSegments();
 
   if (loading) return null;
 
+  const inAuthGroup = segments[0] === '(auth)';
+
+  // 1. 로그인 상태가 아닌데, auth 그룹이 아닌 곳(앱 첫 진입 등)에 있다면 로그인으로 보냄
+  if (!user && !inAuthGroup) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
+  // 2. 로그인 상태인데, game 그룹이 아닌 곳(앱 첫 진입 등)에 있다면 로비로 보냄
+  if (user && segments[0] !== '(game)') {
+    return <Redirect href="/(game)/lobby" />;
+  }
+
+  // 위 두 조건에 걸리지 않는다면 정상적인 라우팅 상태이므로 화면을 그림
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
