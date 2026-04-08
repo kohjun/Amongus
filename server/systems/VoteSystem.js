@@ -5,19 +5,13 @@ const EventBus = require('../engine/EventBus');
 
 class VoteSystem {
   constructor() {
-    // 방별 진행 중인 투표 세션
-    // { roomId: VoteSession }
     this.sessions = new Map();
-
-    // 방별 긴급버튼 사용 여부
-    // { roomId: Set<userId> }  - 사용한 플레이어 목록
-    this.emergencyUsed = new Map();
+    // 1. Map이 확실히 초기화되도록 보장
+    this.emergencyUsed = new Map(); 
   }
 
   // ── 회의 소집 가능 여부 검증 ───────────────────────────
-
   validateMeeting(room, callerId, bodyId, proximitySystem) {
-    // 이미 회의 중
     if (this.sessions.has(room.roomId)) {
       throw new Error('이미 회의가 진행 중입니다.');
     }
@@ -27,14 +21,19 @@ class VoteSystem {
       throw new Error('죽은 플레이어는 회의를 소집할 수 없습니다.');
     }
 
-    // 시체 신고
+    // [시체 신고 로직]
     if (bodyId) {
       const body = room.getPlayer(bodyId);
       if (!body || body.isAlive) {
         throw new Error('신고할 시체가 없습니다.');
       }
 
-      // 신고자가 시체 근처(5m)에 있어야 함
+      // 2. proximitySystem이 undefined인지 체크 (방어 코드)
+      if (!proximitySystem) {
+        console.error('[VoteSystem] proximitySystem이 주입되지 않았습니다.');
+        throw new Error('시스템 오류: 거리 감지 모듈을 찾을 수 없습니다.');
+      }
+
       const record = proximitySystem.getDistance(room.roomId, callerId, bodyId);
       if (!record || record.distance > 5.0) {
         throw new Error('시체에 너무 멉니다. 가까이 가서 신고하세요.');
@@ -42,16 +41,20 @@ class VoteSystem {
       return;
     }
 
-    // 긴급 버튼
+    // [긴급 버튼 로직 - 제한 해제]
+    // 3. 기존의 emergencyUsed 관련 체크 로직을 아예 삭제하거나 주석 처리합니다.
+    console.log(`[VoteSystem] ${caller.nickname}님이 긴급 회의를 소집합니다.`);
+    
+    /* // 아래 1회 제한 로직은 무시됩니다.
     if (!this.emergencyUsed.has(room.roomId)) {
       this.emergencyUsed.set(room.roomId, new Set());
     }
     const usedSet = this.emergencyUsed.get(room.roomId);
-
     if (usedSet.has(callerId)) {
       throw new Error('긴급 버튼은 게임당 1회만 사용할 수 있습니다.');
     }
     usedSet.add(callerId);
+    */
   }
 
   // ── 회의 시작 ──────────────────────────────────────────
@@ -64,7 +67,8 @@ class VoteSystem {
       reason,
       settings: room.settings,
     });
-
+    this.lastMeetingTime = this.lastMeetingTime || new Map();
+    this.lastMeetingTime.set(room.roomId, Date.now());
     this.sessions.set(room.roomId, session);
 
     // 토론 타이머 시작

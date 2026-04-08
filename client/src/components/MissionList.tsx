@@ -198,7 +198,7 @@ const styles = StyleSheet.create({
   // 전체 진행바
   overallBarBg: {
     height:          3,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#b0e8e0',
     borderRadius:    2,
     marginBottom:    14,
     overflow:        'hidden',
@@ -218,7 +218,7 @@ const styles = StyleSheet.create({
     flexDirection:   'row',
     alignItems:      'center',
     justifyContent:  'space-between',
-    backgroundColor: '#181818',
+    backgroundColor: '#c8f0e9',
     borderRadius:    10,
     padding:         10,
     borderWidth:     1,
@@ -226,7 +226,7 @@ const styles = StyleSheet.create({
   },
   itemActive: {
     borderColor:     '#00e676',
-    backgroundColor: '#0a1a10',
+    backgroundColor: '#b0e8e0',
   },
   itemDone: {
     opacity: 0.5,
@@ -272,7 +272,7 @@ const styles = StyleSheet.create({
   },
   stayBarBg: {
     height:          4,
-    backgroundColor: '#1a1a1a',
+    backgroundColor: '#b0e8e0',
     borderRadius:    2,
     overflow:        'hidden',
   },

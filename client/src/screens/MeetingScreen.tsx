@@ -1,176 +1,236 @@
 // src/screens/MeetingScreen.tsx
+// 회의 및 투표 화면 — 토론, 투표, 기권, 결과 확인 기능 포함
 
 import React, { useState, useEffect } from 'react';
 import {
-  View, Text, FlatList, TouchableOpacity,
-  StyleSheet, Alert,
+  View, Text, TouchableOpacity, StyleSheet,
+  ScrollView, Alert, ActivityIndicator
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { socket } from '../services/SocketService';
+import { gameStore } from '../store/gameStore';
 
-type Phase = 'discussion' | 'voting' | 'result';
-
-interface Player {
-  userId:   string;
+interface PlayerInfo {
+  userId: string;
   nickname: string;
-  isAlive:  boolean;
+  isAlive: boolean;
+  color?: string; // 옵션
 }
 
-interface VoteResult {
-  ejected?:     { nickname: string } | null;
-  wasImpostor?: boolean;
-  isTied?:      boolean;
-  voteDetails?: { voter: string; target: string }[];
+interface MeetingResult {
+  ejected: PlayerInfo | null;
+  wasImpostor: boolean | null;
+  isTied: boolean;
+  voteCount: Record<string, number>;
+  totalVotes: number;
 }
+
+const COLORS = [
+  '#00e676','#69f0ae','#40c4ff','#e040fb',
+  '#ffab40','#ff5252','#ea80fc','#64ffda',
+];
 
 export default function MeetingScreen() {
   const router = useRouter();
-  const { roomId, myUserId } = useLocalSearchParams<{ roomId: string; myUserId: string }>();
+  const { roomId } = useLocalSearchParams<{ roomId: string }>();
+  
+  const meetingData = gameStore.getMeetingData() as any;
+  const myInfo = gameStore.getPlayerInfo();
 
-  const [phase,        setPhase]        = useState<Phase>('discussion');
-  const [remaining,    setRemaining]    = useState(90);
-  const [alivePlayers, setAlivePlayers] = useState<Player[]>([]);
-  const [myVote,       setMyVote]       = useState<string | null>(null);
-  const [voteCount,    setVoteCount]    = useState(0);
-  const [result,       setResult]       = useState<VoteResult | null>(null);
-  const [caller,       setCaller]       = useState('');
-  const [reason,       setReason]       = useState('');
-  const [aiMessage,    setAiMessage]    = useState('');
+  // ── 상태 관리 ─────────────────────────────────────────────
+  const [phase, setPhase] = useState<'discussion' | 'voting' | 'result'>('discussion');
+  const [remaining, setRemaining] = useState<number>(meetingData?.discussionTime || 90);
+  
+  const [selectedTarget, setSelectedTarget] = useState<string | null>(null); // userId 또는 'skip'
+  const [hasVoted, setHasVoted] = useState<boolean>(false);
+  const [voteStatus, setVoteStatus] = useState<Record<string, boolean>>({}); // { userId: true }
+  
+  const [resultData, setResultData] = useState<MeetingResult | null>(null);
 
+  // ── 초기 데이터 검증 ─────────────────────────────────────
   useEffect(() => {
-    socket.on('meeting_started', (data: {
-      discussionTime: number; alivePlayers: Player[];
-      caller: { nickname: string }; reason: string;
-    }) => {
-      setPhase('discussion');
-      setRemaining(data.discussionTime);
-      setAlivePlayers(data.alivePlayers);
-      setCaller(data.caller.nickname);
-      setReason(data.reason);
-    });
-
-    socket.on('meeting_tick', ({ phase: p, remaining: r }: { phase: Phase; remaining: number }) => {
-      setPhase(p);
-      setRemaining(r);
-    });
-
-    socket.on('voting_started', (data: { voteTime: number; alivePlayers: Player[] }) => {
-      setPhase('voting');
-      setRemaining(data.voteTime);
-      setAlivePlayers(data.alivePlayers);
-    });
-
-    socket.on('vote_submitted', (data: { totalVotes: number }) => setVoteCount(data.totalVotes));
-
-    socket.on('vote_result', (data: VoteResult) => {
-      setPhase('result');
-      setResult(data);
-    });
-
-    socket.on('ai_message', ({ message }: { message: string }) => setAiMessage(message));
-
-    socket.on('meeting_ended', () => router.back());
-
-    return () => {
-      ['meeting_started','meeting_tick','voting_started',
-       'vote_submitted','vote_result','ai_message','meeting_ended']
-        .forEach(e => socket.off(e));
-    };
+    if (!meetingData || !myInfo) {
+      Alert.alert('오류', '회의 데이터를 불러올 수 없습니다.');
+      router.back();
+    }
   }, []);
 
-  const handleVote = (targetId: string) => {
-    if (myVote) return;
-    socket.emit('vote', { roomId, voterId: myUserId, targetId }, (res: { ok: boolean; error?: string }) => {
-      if (res.ok) setMyVote(targetId);
-      else Alert.alert('투표 실패', res.error);
+  // ── 소켓 이벤트 리스너 ───────────────────────────────────
+  useEffect(() => {
+    socket.on('meeting_tick', (data: { phase: string; remaining: number }) => {
+      setPhase(data.phase as 'discussion' | 'voting' | 'result');
+      setRemaining(data.remaining);
+    });
+
+    socket.on('voting_started', () => {
+      setPhase('voting');
+    });
+
+    socket.on('vote_submitted', (data: { voterId: string }) => {
+      // 누군가 투표를 완료하면 상태 업데이트 (화면에 표시하기 위함)
+      setVoteStatus(prev => ({ ...prev, [data.voterId]: true }));
+    });
+
+    socket.on('vote_result', (data: { result: MeetingResult }) => {
+      setPhase('result');
+      setResultData(data.result);
+    });
+
+    socket.on('meeting_ended', () => {
+      // 5초 후 게임 화면으로 자동 복귀
+      router.replace({ pathname: '/(game)/game', params: { roomId } });
+    });
+
+    return () => {
+      socket.off('meeting_tick');
+      socket.off('voting_started');
+      socket.off('vote_submitted');
+      socket.off('vote_result');
+      socket.off('meeting_ended');
+    };
+  }, [roomId]);
+
+  // ── 투표 제출 핸들러 ─────────────────────────────────────
+  const handleConfirmVote = () => {
+    if (phase !== 'voting') {
+      Alert.alert('안내', '아직 투표 시간이 아닙니다.');
+      return;
+    }
+    if (!selectedTarget) {
+      Alert.alert('안내', '플레이어 또는 기권을 선택해주세요.');
+      return;
+    }
+
+    socket.emit('submit_vote', { roomId, targetId: selectedTarget }, (res: { ok: boolean; error?: string }) => {
+      if (res.ok) {
+        setHasVoted(true);
+      } else {
+        Alert.alert('투표 실패', res.error || '알 수 없는 오류');
+      }
     });
   };
 
-  return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>
-          {reason === 'report' ? '🚨 시체 신고!' : '⚠️ 긴급 회의!'}
-        </Text>
-        <Text style={styles.callerText}>{caller}님이 소집</Text>
-      </View>
+  if (!meetingData) return null;
 
-      <View style={styles.timerBox}>
-        <Text style={styles.phaseText}>
-          {phase === 'discussion' ? '토론 중' : phase === 'voting' ? '투표 중' : '결과'}
-        </Text>
-        <Text style={[styles.timerText, remaining <= 10 && styles.timerRed]}>{remaining}초</Text>
-      </View>
+  const alivePlayers: PlayerInfo[] = meetingData.alivePlayers || [];
+  const isMeDead = !myInfo?.isAlive;
 
-      {aiMessage ? (
-        <View style={styles.aiBox}><Text style={styles.aiText}>🤖 {aiMessage}</Text></View>
-      ) : null}
-
-      {phase === 'discussion' && (
-        <FlatList
-          data={alivePlayers}
-          keyExtractor={p => p.userId}
-          renderItem={({ item }) => (
-            <View style={styles.playerRow}><Text style={styles.playerName}>{item.nickname}</Text></View>
-          )}
-        />
-      )}
-
-      {phase === 'voting' && (
-        <>
-          <Text style={styles.voteGuide}>
-            {myVote
-              ? `투표 완료 (${voteCount}/${alivePlayers.length}명 투표)`
-              : '추방할 플레이어를 선택하세요'}
-          </Text>
-          <FlatList
-            data={alivePlayers}
-            keyExtractor={p => p.userId}
-            renderItem={({ item }) => {
-              const isMe = item.userId === myUserId;
-              const isSelected = myVote === item.userId;
-              return (
-                <TouchableOpacity
-                  style={[styles.voteButton, isSelected && styles.voteButtonSelected, (isMe || !!myVote) && styles.voteButtonDisabled]}
-                  onPress={() => !isMe && !myVote && handleVote(item.userId)}
-                  disabled={isMe || !!myVote}
-                >
-                  <Text style={styles.voteButtonText}>
-                    {item.nickname} {isMe ? '(나)' : ''} {isSelected ? '✓' : ''}
-                  </Text>
-                </TouchableOpacity>
-              );
-            }}
-          />
-          <TouchableOpacity
-            style={[styles.skipButton, !!myVote && styles.voteButtonDisabled]}
-            onPress={() => !myVote && handleVote('skip')}
-            disabled={!!myVote}
-          >
-            <Text style={styles.skipText}>{myVote === 'skip' ? '✓ SKIP' : 'SKIP (추방 안 함)'}</Text>
-          </TouchableOpacity>
-        </>
-      )}
-
-      {phase === 'result' && result && (
-        <View style={styles.resultBox}>
-          {result.ejected ? (
-            <>
-              <Text style={styles.resultTitle}>{result.ejected.nickname} 추방됨</Text>
-              <Text style={[styles.roleReveal, result.wasImpostor ? styles.impostorText : styles.crewText]}>
-                {result.wasImpostor ? '임포스터였습니다! 😈' : '크루원이었습니다... 😢'}
+  // ── 렌더링: 결과 화면 ────────────────────────────────────
+  if (phase === 'result' && resultData) {
+    return (
+      <View style={styles.root}>
+        <View style={styles.resultContainer}>
+          <Text style={styles.resultTitle}>투표 결과</Text>
+          
+          {resultData.isTied ? (
+            <Text style={styles.resultMainText}>동률입니다. 아무도 추방되지 않았습니다.</Text>
+          ) : resultData.ejected ? (
+            <View style={{ alignItems: 'center' }}>
+              <Text style={styles.resultMainText}>{resultData.ejected.nickname} 님이 추방되었습니다.</Text>
+              <Text style={[styles.resultSubText, { color: resultData.wasImpostor ? '#ff5252' : '#00e676' }]}>
+                {resultData.ejected.nickname} 님은 {resultData.wasImpostor ? '임포스터였습니다.' : '크루원이었습니다.'}
               </Text>
-            </>
+            </View>
           ) : (
-            <Text style={styles.resultTitle}>
-              {result.isTied ? '동률! 아무도 추방되지 않았습니다.' : 'SKIP — 추방 없음'}
-            </Text>
+            <Text style={styles.resultMainText}>투표가 건너뛰어졌습니다. 아무도 추방되지 않았습니다.</Text>
           )}
-          <View style={styles.voteDetail}>
-            {result.voteDetails?.map((v, i) => (
-              <Text key={i} style={styles.voteDetailText}>{v.voter} → {v.target}</Text>
-            ))}
-          </View>
+
+          <ActivityIndicator style={{ marginTop: 40 }} color="#00e676" />
+          <Text style={styles.resultWaitText}>게임으로 돌아가는 중...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  // ── 렌더링: 회의 및 투표 화면 ──────────────────────────────
+  return (
+    <View style={styles.root}>
+      {/* 상단 정보 영역 */}
+      <View style={styles.header}>
+        <Text style={styles.meetingReason}>
+          {meetingData.reason === 'emergency' ? '긴급 회의' : '시체 발견'}
+        </Text>
+        <Text style={styles.meetingCaller}>
+          소집자: {meetingData.caller?.nickname || '알 수 없음'}
+        </Text>
+      </View>
+
+      <View style={styles.timerContainer}>
+        <Text style={styles.phaseText}>
+          {phase === 'discussion' ? '토론 시간' : '투표 시간'}
+        </Text>
+        <Text style={[styles.timerText, phase === 'voting' && { color: '#ff5252' }]}>
+          {remaining}초
+        </Text>
+      </View>
+
+      {/* 플레이어 목록 */}
+      <ScrollView style={styles.playerList} contentContainerStyle={styles.playerListContent}>
+        {alivePlayers.map((player, index) => {
+          const isSelected = selectedTarget === player.userId;
+          const didVote = voteStatus[player.userId];
+          const isMe = player.userId === myInfo?.userId;
+
+          return (
+            <TouchableOpacity
+              key={player.userId}
+              style={[
+                styles.playerCard,
+                isSelected && styles.playerCardSelected,
+                isMe && styles.playerCardMe
+              ]}
+              disabled={phase !== 'voting' || hasVoted || isMeDead || isMe}
+              onPress={() => setSelectedTarget(player.userId)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.playerInfoRow}>
+                <View style={[styles.avatar, { borderColor: COLORS[index % COLORS.length] }]}>
+                  <Text style={[styles.avatarInitial, { color: COLORS[index % COLORS.length] }]}>
+                    {player.nickname.charAt(0).toUpperCase()}
+                  </Text>
+                </View>
+                <Text style={styles.playerName}>
+                  {player.nickname} {isMe && '(나)'}
+                </Text>
+              </View>
+
+              {/* 투표 상태 표시 */}
+              {didVote && (
+                <View style={styles.votedBadge}>
+                  <Text style={styles.votedBadgeText}>투표 완료</Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+
+      {/* 하단 투표 액션 영역 */}
+      {!isMeDead && (
+        <View style={styles.bottomActions}>
+          <TouchableOpacity
+            style={[
+              styles.skipButton,
+              selectedTarget === 'skip' && styles.skipButtonSelected
+            ]}
+            disabled={phase !== 'voting' || hasVoted}
+            onPress={() => setSelectedTarget('skip')}
+          >
+            <Text style={styles.skipButtonText}>기권하기 (Skip)</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.confirmButton,
+              (!selectedTarget || phase !== 'voting' || hasVoted) && styles.confirmButtonDisabled
+            ]}
+            disabled={!selectedTarget || phase !== 'voting' || hasVoted}
+            onPress={handleConfirmVote}
+          >
+            <Text style={styles.confirmButtonText}>
+              {hasVoted ? '투표 대기 중...' : '투표 확정'}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
     </View>
@@ -178,30 +238,34 @@ export default function MeetingScreen() {
 }
 
 const styles = StyleSheet.create({
-  container:          { flex: 1, backgroundColor: '#1a1a2e', padding: 16 },
-  header:             { alignItems: 'center', marginBottom: 16 },
-  headerTitle:        { fontSize: 24, fontWeight: 'bold', color: '#ff4444' },
-  callerText:         { color: '#aaa', marginTop: 4 },
-  timerBox:           { alignItems: 'center', marginBottom: 12 },
-  phaseText:          { color: '#fff', fontSize: 14 },
-  timerText:          { fontSize: 48, fontWeight: 'bold', color: '#fff' },
-  timerRed:           { color: '#ff4444' },
-  aiBox:              { backgroundColor: '#2a2a4e', borderRadius: 8, padding: 10, marginBottom: 12 },
-  aiText:             { color: '#aac8ff', fontSize: 13 },
-  playerRow:          { padding: 12, borderBottomWidth: 1, borderBottomColor: '#333' },
-  playerName:         { color: '#fff', fontSize: 16 },
-  voteGuide:          { color: '#aaa', textAlign: 'center', marginBottom: 8 },
-  voteButton:         { backgroundColor: '#2a2a4e', padding: 14, borderRadius: 8, marginBottom: 8 },
-  voteButtonSelected: { backgroundColor: '#cc0000' },
-  voteButtonDisabled: { opacity: 0.5 },
-  voteButtonText:     { color: '#fff', fontSize: 16, textAlign: 'center' },
-  skipButton:         { backgroundColor: '#444', padding: 14, borderRadius: 8, marginTop: 8 },
-  skipText:           { color: '#fff', textAlign: 'center', fontSize: 16 },
-  resultBox:          { alignItems: 'center', marginTop: 16 },
-  resultTitle:        { fontSize: 22, fontWeight: 'bold', color: '#fff', marginBottom: 8 },
-  roleReveal:         { fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
-  impostorText:       { color: '#ff4444' },
-  crewText:           { color: '#44aaff' },
-  voteDetail:         { marginTop: 8 },
-  voteDetailText:     { color: '#aaa', fontSize: 13, marginBottom: 4 },
+  root: { flex: 1, backgroundColor: '#e0f7f4' },
+  header: { alignItems: 'center', paddingTop: 60, paddingBottom: 20, backgroundColor: '#c8f0e9', borderBottomWidth: 1, borderColor: '#1e1e1e' },
+  meetingReason: { fontSize: 24, fontWeight: 'bold', color: '#ff5252', marginBottom: 4 },
+  meetingCaller: { fontSize: 14, color: '#888' },
+  timerContainer: { alignItems: 'center', paddingVertical: 16 },
+  phaseText: { fontSize: 16, color: '#aaa', marginBottom: 4 },
+  timerText: { fontSize: 36, fontWeight: 'bold', color: '#00e676' },
+  playerList: { flex: 1 },
+  playerListContent: { padding: 16, gap: 12 },
+  playerCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#c8f0e9', padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#2a2a2a' },
+  playerCardSelected: { borderColor: '#00e676', backgroundColor: '#a8e4da' },
+  playerCardMe: { borderColor: '#444' },
+  playerInfoRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  avatar: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, alignItems: 'center', justifyContent: 'center', backgroundColor: '#c8f0e9' },
+  avatarInitial: { fontSize: 18, fontWeight: 'bold' },
+  playerName: { fontSize: 16, color: '#f0f0f0', fontWeight: '500' },
+  votedBadge: { backgroundColor: '#1e1e1e', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  votedBadgeText: { fontSize: 12, color: '#888' },
+  bottomActions: { padding: 20, borderTopWidth: 1, borderColor: '#1a1a1a', gap: 12, backgroundColor: '#e0f7f4' },
+  skipButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 14, borderRadius: 10, borderWidth: 1, borderColor: '#444', backgroundColor: '#c8f0e9' },
+  skipButtonSelected: { borderColor: '#ffab40', backgroundColor: '#2a1a00' },
+  skipButtonText: { fontSize: 15, color: '#ccc', fontWeight: '600' },
+  confirmButton: { alignItems: 'center', justifyContent: 'center', paddingVertical: 16, borderRadius: 10, backgroundColor: '#00e676' },
+  confirmButtonDisabled: { backgroundColor: '#0a2a1a' },
+  confirmButtonText: { fontSize: 16, color: '#000', fontWeight: 'bold' },
+  resultContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
+  resultTitle: { fontSize: 32, fontWeight: 'bold', color: '#f0f0f0', marginBottom: 20 },
+  resultMainText: { fontSize: 20, color: '#fff', textAlign: 'center', lineHeight: 30, marginBottom: 12 },
+  resultSubText: { fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
+  resultWaitText: { fontSize: 14, color: '#888', marginTop: 12 },
 });

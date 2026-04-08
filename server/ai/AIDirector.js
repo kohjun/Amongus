@@ -80,7 +80,7 @@ async function ask(room, player, question) {
 
     const chatSession = genModel.startChat({
       history:          geminiHistory,
-      generationConfig: { maxOutputTokens: 200, temperature: 0.7 },
+      generationConfig: { maxOutputTokens: 500, temperature: 0.7 },
     });
 
     const res    = await chatSession.sendMessage(question);

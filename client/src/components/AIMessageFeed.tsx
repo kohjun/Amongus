@@ -131,7 +131,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   privateGuide: {
-    backgroundColor: '#0d2137',
+    backgroundColor: '#c8f0e9',
     borderLeftWidth: 3,
     borderLeftColor: '#4a9eff',
     borderRadius:    8,

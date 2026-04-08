@@ -12,7 +12,7 @@ const MODELS = {
   precise: 'gemini-2.5-flash',  // 개인 가이드용 (정확)
 };
 
-async function chat({ prompt, systemPrompt, model = 'fast', maxTokens = 150 }) {
+async function chat({ prompt, systemPrompt, model = 'fast', maxTokens = 500 }) {
   try {
     const genModel = genAI.getGenerativeModel({
       model:             MODELS[model],
@@ -22,8 +22,8 @@ async function chat({ prompt, systemPrompt, model = 'fast', maxTokens = 150 }) {
     const result = await genModel.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: maxTokens,
-        temperature:     0.8,  // 약간의 창의성
+        maxOutputTokens: maxTokens, // 이제 500이 적용되어 끊기지 않습니다.
+        temperature:     0.8,
       },
     });
 
@@ -31,7 +31,6 @@ async function chat({ prompt, systemPrompt, model = 'fast', maxTokens = 150 }) {
 
   } catch (err) {
     console.error('[LLM] API 오류:', err.message);
-    // API 실패 시 fallback 메시지
     return getFallbackMessage(prompt);
   }
 }

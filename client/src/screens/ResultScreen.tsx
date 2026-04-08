@@ -106,7 +106,7 @@ export default function ResultScreen() {
 }
 
 const styles = StyleSheet.create({
-  root:                 { flex: 1, backgroundColor: '#0a0a0a' },
+  root:                 { flex: 1, backgroundColor: '#e0f7f4' },
   bgGlow:               { position: 'absolute', width: 400, height: 400, borderRadius: 200, top: -100, alignSelf: 'center', opacity: 0.08 },
   bgGlowCrew:           { backgroundColor: '#00e676' },
   bgGlowImpostor:       { backgroundColor: '#ff5252' },
@@ -126,19 +126,19 @@ const styles = StyleSheet.create({
   impostorName:         { fontSize: 13, fontWeight: '600', color: '#f0f0f0' },
   impostorStatus:       { fontSize: 11, color: '#666' },
   playerList:           { gap: 8 },
-  playerRow:            { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111', borderRadius: 12, padding: 12, gap: 12, borderWidth: 1, borderColor: '#1e1e1e' },
+  playerRow:            { flexDirection: 'row', alignItems: 'center', backgroundColor: '#c8f0e9', borderRadius: 12, padding: 12, gap: 12, borderWidth: 1, borderColor: '#1e1e1e' },
   playerAvatar:         { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-  playerAvatarCrew:     { backgroundColor: '#0a1a10' },
+  playerAvatarCrew:     { backgroundColor: '#b0e8e0' },
   playerAvatarImpostor: { backgroundColor: '#1a0a0a' },
   playerAvatarText:     { fontSize: 14, fontWeight: '700', color: '#f0f0f0' },
   playerInfo:           { flex: 1, gap: 3 },
   playerName:           { fontSize: 14, fontWeight: '500', color: '#f0f0f0' },
   playerRole:           { fontSize: 11, color: '#444' },
   playerStatus:         { alignItems: 'flex-end' },
-  aliveBadge:           { backgroundColor: '#0a1a10', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  aliveBadge:           { backgroundColor: '#b0e8e0', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   aliveBadgeText:       { fontSize: 11, color: '#00e676', fontWeight: '600' },
   deadBadge:            { backgroundColor: '#1a1a1a', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   deadBadgeText:        { fontSize: 11, color: '#444' },
-  lobbyBtn:             { backgroundColor: '#111', borderRadius: 14, paddingVertical: 16, alignItems: 'center', borderWidth: 1, borderColor: '#1e1e1e', marginTop: 8 },
+  lobbyBtn:             { backgroundColor: '#c8f0e9', borderRadius: 14, paddingVertical: 16, alignItems: 'center', borderWidth: 1, borderColor: '#1e1e1e', marginTop: 8 },
   lobbyBtnText:         { fontSize: 15, fontWeight: '600', color: '#888' },
 });

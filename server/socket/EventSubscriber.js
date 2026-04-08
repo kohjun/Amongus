@@ -103,9 +103,10 @@ function init(io) {
 
   // ── 회의 소집 ─────────────────────────────────────────
   // meeting_called: GameEngine.handleMeeting()에서 emit
-  EventBus.on('meeting_called', async ({ room, caller, bodyId, reason }) => {
+  EventBus.on('meeting_called', ({ room, caller, bodyId, reason }) => {
     const body = bodyId ? room.getPlayer(bodyId) : null;
 
+    // 1. [중요] 게임 화면 전환 신호를 AI 호출보다 먼저, 즉시 보냅니다.
     io.to(room.roomId).emit('meeting_started', {
       caller:         caller.toPublicInfo(),
       body:           body ? body.toPublicInfo() : null,
@@ -114,12 +115,15 @@ function init(io) {
       discussionTime: room.settings.discussionTime,
     });
 
-    try {
-      const msg = await AIDirector.onMeeting(room, caller, reason, body);
-      if (msg) io.to(room.roomId).emit('ai_message', { type: 'announcement', message: msg });
-    } catch (e) {
-      console.error('[EventSubscriber] meeting_called AI error:', e.message);
-    }
+    // 2. AI 멘트는 별도로 실행하여 게임 흐름을 방해하지 않게 합니다.
+    (async () => {
+      try {
+        const msg = await AIDirector.onMeeting(room, caller, reason, body);
+        if (msg) io.to(room.roomId).emit('ai_message', { type: 'announcement', message: msg });
+      } catch (e) {
+        console.error('[AI] 회의 안내 생성 실패:', e.message);
+      }
+    })();
   });
 
   // ── 회의 tick (매초) ──────────────────────────────────

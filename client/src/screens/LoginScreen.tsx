@@ -166,7 +166,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   root: {
     flex:            1,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: '#e0f7f4',
     alignItems:      'center',
     justifyContent:  'center',
     padding:         24,
@@ -178,7 +178,7 @@ const styles = StyleSheet.create({
     width:           320,
     height:          320,
     borderRadius:    160,
-    backgroundColor: '#1a3a2a',
+    backgroundColor: '#a0d8d0',
     top:             -80,
     right:           -100,
     opacity:         0.6,
@@ -188,7 +188,7 @@ const styles = StyleSheet.create({
     width:           200,
     height:          200,
     borderRadius:    100,
-    backgroundColor: '#0f2a1a',
+    backgroundColor: '#80c8c0',
     bottom:          40,
     left:            -60,
     opacity:         0.5,
@@ -198,7 +198,7 @@ const styles = StyleSheet.create({
   card: {
     width:           '100%',
     maxWidth:        400,
-    backgroundColor: '#111',
+    backgroundColor: '#c8f0e9',
     borderRadius:    20,
     padding:         28,
     borderWidth:     1,

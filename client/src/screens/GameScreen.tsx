@@ -1,5 +1,5 @@
 // src/screens/GameScreen.tsx
-// 메인 게임 화면 — 역할(crew/impostor)에 따라 UI 분기
+// 메인 게임 화면 — 역할(crew/impostor)에 따라 UI 분기 및 토스트 알림 추가
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -36,8 +36,16 @@ export default function GameScreen() {
   const [missionProgress, setMissionProgress] = useState({ completed: 0, total: 0, percent: 0 });
   const [currentZone,     setCurrentZone]     = useState<string | null>(initialInfo?.zone ?? null);
   const [showProximity,   setShowProximity]   = useState(false);
-
+  
+  // 추가: 토스트 메시지 상태
+  const [toastMessage,    setToastMessage]    = useState<string | null>(null);
   const reportCooldown = useRef(false);
+
+  // ── 토스트 알림 헬퍼 ─────────────────────────────────────
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3000);
+  };
 
   useEffect(() => {
     if (!playerInfo) router.replace('/(game)/lobby');
@@ -59,6 +67,7 @@ export default function GameScreen() {
           t.missionId === data.missionId ? { ...t, status: 'completed' as const } : t
         ),
       }) : prev);
+      showToast("✅ 미션 완료!");
     });
 
     socket.on('killable_targets', (data: { targets: NearbyPlayer[] }) => {
@@ -117,28 +126,25 @@ export default function GameScreen() {
   const handleReport = useCallback((bodyId: string) => {
     if (reportCooldown.current) return;
     reportCooldown.current = true;
-    setTimeout(() => { reportCooldown.current = false; }, 3000);
+
     socket.emit('report_body', { roomId, bodyId }, (res: { ok: boolean; error?: string }) => {
-      if (!res.ok) Alert.alert('신고 실패', res.error);
+      if (res.ok) {
+        showToast("📢 시체를 신고했습니다!");
+      } else {
+        showToast(`❌ 신고 실패: ${res.error}`);
+        reportCooldown.current = false; // 실패 시 쿨다운 해제
+      }
     });
   }, [roomId]);
 
   const handleEmergency = useCallback(() => {
-    Alert.alert(
-      '긴급 회의 소집',
-      '긴급 버튼은 게임당 1회만 사용할 수 있습니다. 소집하시겠습니까?',
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '소집', style: 'destructive',
-          onPress: () => {
-            socket.emit('emergency_meeting', { roomId }, (res: { ok: boolean; error?: string }) => {
-              if (!res.ok) Alert.alert('실패', res.error);
-            });
-          },
-        },
-      ]
-    );
+    socket.emit('emergency_meeting', { roomId }, (res: { ok: boolean; error?: string }) => {
+      if (res.ok) {
+        showToast("🚨 긴급 회의 소집 중...");
+      } else {
+        showToast(`❌ 버튼 작동 실패: ${res.error}`);
+      }
+    });
   }, [roomId]);
 
   if (!playerInfo) return null;
@@ -156,6 +162,13 @@ export default function GameScreen() {
 
   return (
     <View style={styles.root}>
+      {/* 상단 알림 토스트 */}
+      {toastMessage && (
+        <View style={styles.toastContainer}>
+          <Text style={styles.toastText}>{toastMessage}</Text>
+        </View>
+      )}
+
       <View style={styles.topBar}>
         <View style={[styles.roleBadge, isImpostor ? styles.roleBadgeImpostor : styles.roleBadgeCrew]}>
           <Text style={styles.roleBadgeText}>{isImpostor ? '임포스터' : '크루원'}</Text>
@@ -195,10 +208,7 @@ export default function GameScreen() {
       <View style={styles.bottomBar}>
         <TouchableOpacity
           style={styles.reportBtn}
-          onPress={() => Alert.alert('시체 신고', '근처의 시체를 신고하시겠습니까?', [
-            { text: '취소', style: 'cancel' },
-            { text: '신고', onPress: () => handleReport('detected-body-id') },
-          ])}
+          onPress={() => handleReport('detected-body-id')} // 실제 감지된 bodyId 주입 필요
           activeOpacity={0.8}
         >
           <Text style={styles.reportBtnIcon}>🔴</Text>
@@ -214,11 +224,13 @@ export default function GameScreen() {
 }
 
 const styles = StyleSheet.create({
-  root:                { flex: 1, backgroundColor: '#0a0a0a' },
+  root:                { flex: 1, backgroundColor: '#e0f7f4' },
+  toastContainer:      { position: 'absolute', top: 110, left: 20, right: 20, backgroundColor: 'rgba(175, 230, 220, 0.95)', padding: 12, borderRadius: 10, zIndex: 1000, borderWidth: 1, borderColor: '#333', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4 },
+  toastText:           { color: '#fff', fontSize: 13, fontWeight: '600' },
   topBar:              { flexDirection: 'row', alignItems: 'center', paddingTop: 52, paddingBottom: 10, paddingHorizontal: 14, gap: 10, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
   roleBadge:           { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1 },
   roleBadgeImpostor:   { backgroundColor: '#1a0a0a', borderColor: '#3a1a1a' },
-  roleBadgeCrew:       { backgroundColor: '#0a1a10', borderColor: '#0a3a1a' },
+  roleBadgeCrew:       { backgroundColor: '#b0e8e0', borderColor: '#80ccc4' },
   roleBadgeText:       { fontSize: 12, fontWeight: '700', color: '#f0f0f0' },
   missionBarWrap:      { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 },
   missionBarBg:        { flex: 1, height: 4, backgroundColor: '#1a1a1a', borderRadius: 2, overflow: 'hidden' },
@@ -232,14 +244,14 @@ const styles = StyleSheet.create({
   scrollContent:       { padding: 12, gap: 12, paddingBottom: 100 },
   proximityToggle:     { paddingVertical: 8 },
   proximityToggleText: { fontSize: 12, color: '#444' },
-  bottomBar:           { flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: '#1a1a1a', backgroundColor: '#0a0a0a' },
+  bottomBar:           { flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: '#1a1a1a', backgroundColor: '#e0f7f4' },
   reportBtn:           { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#1a0a0a', borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: '#3a1010' },
   reportBtnIcon:       { fontSize: 16 },
   reportBtnText:       { fontSize: 13, fontWeight: '600', color: '#ff5252' },
   emergencyBtn:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#1a1200', borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: '#2a2000' },
   emergencyBtnIcon:    { fontSize: 16 },
   emergencyBtnText:    { fontSize: 13, fontWeight: '600', color: '#ffab40' },
-  deadOverlay:         { flex: 1, backgroundColor: '#050505', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
+  deadOverlay:         { flex: 1, backgroundColor: '#e0f7f4', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   deadIcon:            { fontSize: 64, opacity: 0.4 },
   deadTitle:           { fontSize: 28, fontWeight: '700', color: '#2a2a2a' },
   deadSubTitle:        { fontSize: 14, color: '#1a1a1a' },
