@@ -227,12 +227,12 @@ const styles = StyleSheet.create({
   logoText: {
     fontSize:   26,
     fontWeight: '700',
-    color:      '#f0f0f0',
+    color:      '#1a1a1a',
     letterSpacing: 1,
   },
   tagline: {
     fontSize:  12,
-    color:     '#444',
+    color:     '#1a1a1a',
     marginTop: 4,
     letterSpacing: 2,
     textTransform: 'uppercase',
@@ -253,11 +253,11 @@ const styles = StyleSheet.create({
   },
   tabText: {
     fontSize:   14,
-    color:      '#444',
+    color:      '#555',
     fontWeight: '500',
   },
   tabTextActive: {
-    color: '#f0f0f0',
+    color: '#1a1a1a',
   },
   tabUnderline: {
     position:        'absolute',
@@ -291,7 +291,7 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     fontSize: 12,
-    color:    '#555',
+    color:    '#1a1a1a',
     letterSpacing: 0.5,
   },
   input: {
@@ -334,7 +334,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e1e1e',
   },
   dividerText: {
-    color:    '#333',
+    color:    '#1a1a1a',
     fontSize: 12,
   },
 
@@ -347,7 +347,7 @@ const styles = StyleSheet.create({
     alignItems:      'center',
   },
   googleBtnText: {
-    color:    '#aaa',
+    color:    '#1a1a1a',
     fontSize: 14,
     fontWeight: '500',
   },

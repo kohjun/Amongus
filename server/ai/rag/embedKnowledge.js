@@ -1,24 +1,34 @@
-// server/ai/rag/embedKnowledge.js v2
+// server/ai/rag/embedKnowledge.js v3
 //
 // 실행: node server/ai/rag/embedKnowledge.js
 // 규칙이 바뀌거나 새 게임 추가 시에만 실행합니다.
+// 임베딩 모델: gemini-embedding-001 (768차원, Gemini)
 
 'use strict';
 
-require('dotenv').config();
+// 실행 위치 무관하게 프로젝트 루트 .env 로드
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../../../.env') });
 
-const OpenAI           = require('openai');
-const { createClient } = require('@supabase/supabase-js');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { createClient }       = require('@supabase/supabase-js');
 const { getEmbeddableChunks, ALL_CHUNKS } = require('./knowledgeBase/index');
 
-const openai   = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const genAI    = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-const EMBED_MODEL = 'text-embedding-3-small';
+const EMBED_MODEL = 'gemini-embedding-001';
 const TABLE_NAME  = 'game_rules';
+
+async function embedText(text) {
+  const model  = genAI.getGenerativeModel({ model: EMBED_MODEL });
+  const result = await model.embedContent(text);
+  return result.embedding.values; // 768차원
+}
 
 async function main() {
   console.log('📚 지식 베이스 임베딩 시작...');
+  console.log(`   모델: ${EMBED_MODEL} (768차원)`);
   console.log(`   전체 청크: ${ALL_CHUNKS.length}개`);
 
   const embeddable = getEmbeddableChunks();
@@ -54,8 +64,7 @@ async function main() {
   let success = 0;
   for (const chunk of embeddable) {
     try {
-      const res       = await openai.embeddings.create({ model: EMBED_MODEL, input: chunk.embedText });
-      const embedding = res.data[0].embedding;
+      const embedding = await embedText(chunk.embedText);
 
       const { error } = await supabase.from(TABLE_NAME).insert({
         chunk_id:  chunk.chunkId,

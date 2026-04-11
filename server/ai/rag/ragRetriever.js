@@ -13,8 +13,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// embedding-001: 768차원 출력
-const EMBED_MODEL    = 'embedding-001';
+// gemini-embedding-001: 768차원 출력
+const EMBED_MODEL    = 'gemini-embedding-001';
 const TABLE_NAME     = 'game_rules';
 const TOP_K          = 5;
 const MIN_SIMILARITY = 0.65;

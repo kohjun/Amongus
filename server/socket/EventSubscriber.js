@@ -48,8 +48,6 @@ function init(io) {
       }
     }, 1000);
 
-    // 개인 가이드 스케줄러 시작
-    AIDirector.startGuideScheduler(room, io);
   });
 
   // ── 킬 발생 ───────────────────────────────────────────
@@ -130,13 +128,6 @@ function init(io) {
   // VoteSystem 내부 타이머에서 emit
   EventBus.on('meeting_tick', ({ room, phase, remaining }) => {
     io.to(room.roomId).emit('meeting_tick', { phase, remaining });
-
-    // 토론 30초 경과 시 AI 유도 멘트
-    if (phase === 'discussion' && remaining === room.settings.discussionTime - 30) {
-      AIDirector.onDiscussionGuide(room).then(guide => {
-        if (guide) io.to(room.roomId).emit('ai_message', { type: 'discussion_guide', message: guide });
-      }).catch(e => console.error('[EventSubscriber] discussion_guide AI error:', e.message));
-    }
   });
 
   // ── 투표 단계 시작 ────────────────────────────────────
@@ -145,6 +136,23 @@ function init(io) {
       voteTime:     session.voteTime,
       alivePlayers: room.alivePlayers.map(p => p.toPublicInfo()),
     });
+  });
+
+  // ── 사전 투표 제출 알림 (토론 단계) ─────────────────────
+  EventBus.on('pre_vote_submitted', ({ roomId, voterId }) => {
+    try {
+      const VoteSystem = require('../systems/VoteSystem');
+      const room  = require('../engine/GameEngine').getRoom(roomId);
+      const voter = room.getPlayer(voterId);
+
+      io.to(roomId).emit('pre_vote_submitted', {
+        voterNickname: voter?.nickname,
+        preVoteCount:  VoteSystem.sessions.get(roomId)?.preVotes.size || 0,
+        totalPlayers:  room.alivePlayers.length,
+      });
+    } catch (e) {
+      console.error('[EventSubscriber] pre_vote_submitted error:', e.message);
+    }
   });
 
   // ── 투표 제출 알림 (익명) ─────────────────────────────
@@ -212,22 +220,10 @@ function init(io) {
     });
   });
 
-  // ── 미션 완료 (진행도 + AI 마일스톤) ─────────────────
-  EventBus.on('task_completed', async ({ room, player, taskId }) => {
+  // ── 미션 완료 (진행도 업데이트) ──────────────────────
+  EventBus.on('task_completed', ({ room, player, taskId }) => {
     const progress = MissionSystem.getProgressBar(room);
-
-    // 전체 진행바 업데이트
     io.to(room.roomId).emit('mission_progress', progress);
-
-    // 25 / 50 / 75% 마일스톤 AI 멘트
-    if ([25, 50, 75].includes(progress.percent)) {
-      try {
-        const msg = await AIDirector.onMissionMilestone(room, progress);
-        if (msg) io.to(room.roomId).emit('ai_message', { type: 'milestone', message: msg });
-      } catch (e) {
-        console.error('[EventSubscriber] task_completed AI error:', e.message);
-      }
-    }
   });
 
   // ── 게임 종료 ─────────────────────────────────────────
@@ -249,6 +245,9 @@ function init(io) {
     } catch (e) {
       console.error('[EventSubscriber] game_ended AI error:', e.message);
     }
+
+    // 대화 히스토리 정리
+    AIDirector.cleanupRoom(room.roomId);
   });
 
   // ── 재화 지급 ─────────────────────────────────────────

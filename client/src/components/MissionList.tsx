@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize:   14,
     fontWeight: '600',
-    color:      '#888',
+    color:      '#1a1a1a',
   },
   headerCount: {
     fontSize: 14,
@@ -192,7 +192,7 @@ const styles = StyleSheet.create({
     color:      '#00e676',
   },
   headerCountTotal: {
-    color: '#333',
+    color: '#1a1a1a',
   },
 
   // 전체 진행바
@@ -253,7 +253,7 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontSize:   13,
     fontWeight: '500',
-    color:      '#e0e0e0',
+    color:      '#1a1a1a',
   },
   itemTitleDone: {
     textDecorationLine: 'line-through',
@@ -261,7 +261,7 @@ const styles = StyleSheet.create({
   },
   itemZone: {
     fontSize:      11,
-    color:         '#444',
+    color:         '#1a1a1a',
     textTransform: 'capitalize',
   },
 

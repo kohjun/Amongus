@@ -5,12 +5,12 @@ const EventBus = require('../engine/EventBus');
 
 class VoteSystem {
   constructor() {
-    this.sessions = new Map();
-    // 1. Map이 확실히 초기화되도록 보장
-    this.emergencyUsed = new Map(); 
+    this.sessions      = new Map();
+    this.emergencyUsed = new Map();
   }
 
   // ── 회의 소집 가능 여부 검증 ───────────────────────────
+
   validateMeeting(room, callerId, bodyId, proximitySystem) {
     if (this.sessions.has(room.roomId)) {
       throw new Error('이미 회의가 진행 중입니다.');
@@ -21,14 +21,12 @@ class VoteSystem {
       throw new Error('죽은 플레이어는 회의를 소집할 수 없습니다.');
     }
 
-    // [시체 신고 로직]
     if (bodyId) {
       const body = room.getPlayer(bodyId);
       if (!body || body.isAlive) {
         throw new Error('신고할 시체가 없습니다.');
       }
 
-      // 2. proximitySystem이 undefined인지 체크 (방어 코드)
       if (!proximitySystem) {
         console.error('[VoteSystem] proximitySystem이 주입되지 않았습니다.');
         throw new Error('시스템 오류: 거리 감지 모듈을 찾을 수 없습니다.');
@@ -41,20 +39,7 @@ class VoteSystem {
       return;
     }
 
-    // [긴급 버튼 로직 - 제한 해제]
-    // 3. 기존의 emergencyUsed 관련 체크 로직을 아예 삭제하거나 주석 처리합니다.
     console.log(`[VoteSystem] ${caller.nickname}님이 긴급 회의를 소집합니다.`);
-    
-    /* // 아래 1회 제한 로직은 무시됩니다.
-    if (!this.emergencyUsed.has(room.roomId)) {
-      this.emergencyUsed.set(room.roomId, new Set());
-    }
-    const usedSet = this.emergencyUsed.get(room.roomId);
-    if (usedSet.has(callerId)) {
-      throw new Error('긴급 버튼은 게임당 1회만 사용할 수 있습니다.');
-    }
-    usedSet.add(callerId);
-    */
   }
 
   // ── 회의 시작 ──────────────────────────────────────────
@@ -67,33 +52,52 @@ class VoteSystem {
       reason,
       settings: room.settings,
     });
+
     this.lastMeetingTime = this.lastMeetingTime || new Map();
     this.lastMeetingTime.set(room.roomId, Date.now());
     this.sessions.set(room.roomId, session);
 
-    // 토론 타이머 시작
+    // 토론 타이머 시작 전에 이벤트 emit
+    EventBus.emit('meeting_started', { room, session });
     this._startDiscussionTimer(room, session);
 
-    EventBus.emit('meeting_started', { room, session });
     return session;
   }
 
   // ── 토론 타이머 ───────────────────────────────────────
 
   _startDiscussionTimer(room, session) {
-    // 매초 남은 시간 브로드캐스트
     let remaining = session.discussionTime;
+    let earlyEnd  = false;
+
+    // 전원 사전 투표 완료 시 토론 단축
+    const onEarlyEnd = ({ room: r }) => {
+      if (r.roomId !== room.roomId) return;
+      if (remaining > 10) {
+        remaining = 10;
+        earlyEnd  = true;
+        EventBus.emit('meeting_tick', {
+          room, phase: VOTE_PHASE.DISCUSSION, remaining, earlyEnd: true,
+        });
+      }
+    };
+    EventBus.on('discussion_early_end', onEarlyEnd);
 
     const tick = setInterval(() => {
+      if (session.phase === VOTE_PHASE.ENDED) {
+        clearInterval(tick);
+        EventBus.off('discussion_early_end', onEarlyEnd);
+        return;
+      }
+
       remaining--;
       EventBus.emit('meeting_tick', {
-        room,
-        phase:     VOTE_PHASE.DISCUSSION,
-        remaining,
+        room, phase: VOTE_PHASE.DISCUSSION, remaining, earlyEnd,
       });
 
       if (remaining <= 0) {
         clearInterval(tick);
+        EventBus.off('discussion_early_end', onEarlyEnd);
         this._startVotingPhase(room, session);
       }
     }, 1000);
@@ -104,18 +108,18 @@ class VoteSystem {
   // ── 투표 단계 시작 ─────────────────────────────────────
 
   _startVotingPhase(room, session) {
+    // ✅ phase 전환을 emit보다 반드시 먼저 수행 (Race Condition 방지)
     session.moveToVoting();
+    session.applyPreVotes();
     EventBus.emit('voting_started', { room, session });
 
     let remaining = session.voteTime;
 
     const tick = setInterval(() => {
-      remaining--;
-      EventBus.emit('meeting_tick', {
-        room,
-        phase:     VOTE_PHASE.VOTING,
-        remaining,
-      });
+      if (session.phase === VOTE_PHASE.ENDED) {
+        clearInterval(tick);
+        return;
+      }
 
       // 모두 투표 완료 시 즉시 결과 처리
       if (session.isAllVoted(room.alivePlayers)) {
@@ -123,6 +127,13 @@ class VoteSystem {
         this._processResult(room, session);
         return;
       }
+
+      remaining--;
+      EventBus.emit('meeting_tick', {
+        room,
+        phase: VOTE_PHASE.VOTING,
+        remaining,
+      });
 
       if (remaining <= 0) {
         clearInterval(tick);
@@ -139,16 +150,34 @@ class VoteSystem {
     const session = this.sessions.get(roomId);
     if (!session) throw new Error('진행 중인 투표가 없습니다.');
 
+    // 토론 단계: 사전 투표로 처리
+    if (session.phase === VOTE_PHASE.DISCUSSION) {
+      session.submitPreVote(voterId, targetId);
+      EventBus.emit('pre_vote_submitted', { roomId, voterId, targetId });
+      const room = require('../engine/GameEngine').getRoom(roomId);
+      if (room && session.isAllPreVoted(room.alivePlayers)) {
+        EventBus.emit('discussion_early_end', { room });
+      }
+      return { preVote: true, count: session.preVotes.size };
+    }
+
+    if (session.phase !== VOTE_PHASE.VOTING) {
+      throw new Error(`아직 투표 단계가 아닙니다. (현재: ${session.phase})`);
+    }
+
     session.submitVote(voterId, targetId);
     EventBus.emit('vote_submitted', { roomId, voterId, targetId });
-    return session.votes.size;
+    return { preVote: false, count: session.votes.size };
   }
 
   // ── 결과 처리 ──────────────────────────────────────────
 
   _processResult(room, session) {
-    const tally  = session.tally(room.alivePlayers);
-    let ejected  = null;
+    // 이미 결과 처리된 경우 중복 실행 방지
+    if (session.phase === VOTE_PHASE.RESULT || session.phase === VOTE_PHASE.ENDED) return;
+
+    const tally     = session.tally(room.alivePlayers);
+    let ejected     = null;
     let wasImpostor = null;
 
     if (tally.ejected) {
@@ -161,11 +190,11 @@ class VoteSystem {
     }
 
     const result = {
-      ejected:     ejected ? ejected.toPublicInfo() : null,
+      ejected:    ejected ? ejected.toPublicInfo() : null,
       wasImpostor,
-      isTied:      tally.isTied,
-      voteCount:   tally.count,
-      totalVotes:  session.votes.size,
+      isTied:     tally.isTied,
+      voteCount:  tally.count,
+      totalVotes: session.votes.size,
     };
 
     session.moveToResult(result);
@@ -184,8 +213,6 @@ class VoteSystem {
   _endMeeting(room, session) {
     session.end();
     this.sessions.delete(room.roomId);
-
-    // GameEngine에서 승리 조건 체크
     EventBus.emit('meeting_ended', { room, session });
   }
 

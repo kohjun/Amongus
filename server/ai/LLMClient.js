@@ -1,38 +1,77 @@
 // server/ai/LLMClient.js
-
 'use strict';
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// 모델 선택 (fast = 공개 해설용, precise = 개인 가이드용)
 const MODELS = {
-  fast:    'gemini-2.5-flash',  // 공개 해설용 (빠름)
-  precise: 'gemini-2.5-flash',  // 개인 가이드용 (정확)
+  fast:    'gemini-2.5-flash',   // 공개 해설용
+  precise: 'gemini-2.5-flash',       // AI 채팅/가이드용
 };
 
+const MAX_RETRIES  = 3;
+const RETRY_DELAYS = [1000, 2000, 4000]; // 지수 백오프 (ms)
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function is503(err) {
+  return (
+    err?.status === 503 ||
+    err?.statusCode === 503 ||
+    (typeof err?.message === 'string' && err.message.includes('503'))
+  );
+}
+
+async function callModel(modelName, { prompt, systemPrompt, maxTokens }) {
+  const genModel = genAI.getGenerativeModel({
+    model:             modelName,
+    systemInstruction: systemPrompt,
+  });
+  const result = await genModel.generateContent({
+    contents:         [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.8 },
+  });
+  return result.response.text().trim();
+}
+
 async function chat({ prompt, systemPrompt, model = 'fast', maxTokens = 500 }) {
-  try {
-    const genModel = genAI.getGenerativeModel({
-      model:             MODELS[model],
-      systemInstruction: systemPrompt,
-    });
+  const modelName = MODELS[model];
 
-    const result = await genModel.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: maxTokens, // 이제 500이 적용되어 끊기지 않습니다.
-        temperature:     0.8,
-      },
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const delay = RETRY_DELAYS[attempt - 1];
+      console.warn(`[LLM] 503 재시도 (${attempt}/${MAX_RETRIES}) — ${delay}ms 대기...`);
+      await sleep(delay);
+    }
 
-    return result.response.text().trim();
+    try {
+      return await callModel(modelName, { prompt, systemPrompt, maxTokens });
+    } catch (err) {
+      const shouldRetry = is503(err) && attempt < MAX_RETRIES;
+      if (shouldRetry) continue;
 
-  } catch (err) {
-    console.error('[LLM] API 오류:', err.message);
-    return getFallbackMessage(prompt);
+      // 재시도 소진 또는 503 아닌 오류
+      if (model === 'precise') {
+        // precise 최종 실패 → gemini-2.0-flash 폴백
+        console.warn(`[LLM] ${modelName} 실패 (${err.message}), gemini-2.0-flash 폴백`);
+        try {
+          return await callModel(MODELS.fast, { prompt, systemPrompt, maxTokens });
+        } catch (fallbackErr) {
+          console.error('[LLM] 폴백도 실패:', fallbackErr.message);
+          return getFallbackMessage(prompt);
+        }
+      }
+
+      // fast 실패 → 정적 메시지 반환
+      console.error('[LLM] API 오류:', err.message);
+      return getFallbackMessage(prompt);
+    }
   }
+
+  return getFallbackMessage(prompt);
 }
 
 // API 장애 시 fallback

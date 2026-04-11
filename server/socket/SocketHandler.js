@@ -262,7 +262,44 @@ function register(socket, io) {
       cb({ ok: false, error: e.message });
     }
   });
+  // ── AI Director 질문 (채팅형) ──────────────────────────
+  socket.on('ai_ask', async ({ roomId, question }, cb) => {
+    try {
+      if (!question || question.trim().length === 0) {
+        return cb({ ok: false, error: '질문을 입력해주세요.' });
+      }
+      if (question.length > 200) {
+        return cb({ ok: false, error: '질문이 너무 깁니다. (최대 200자)' });
+      }
 
+      const room   = GameEngine.getRoom(roomId);
+      const player = room.getPlayer(socket.userId);
+
+      if (!player?.isAlive) {
+        return cb({ ok: false, error: '사망한 플레이어는 AI에게 질문할 수 없습니다.' });
+      }
+
+      // 비동기 응답: 먼저 ok 반환 후 응답 스트리밍
+      cb({ ok: true });
+
+      const { answer, sources } = await AIDirector.ask(room, player, question);
+
+      // 질문한 본인에게만 전송 (역할 정보 보호)
+      socket.emit('ai_reply', {
+        question,
+        answer,
+        sources,   // RAG 출처 (선택적 표시)
+      });
+
+    } catch (e) {
+      console.error('[ai_ask] 오류:', e.message);
+      socket.emit('ai_reply', {
+        question,
+        answer: '죄송해요, 잠시 후 다시 물어봐주세요! 🙏',
+        sources: [],
+      });
+    }
+  });
   // ── 긴급 버튼 ─────────────────────────────────────────
   socket.on('emergency_meeting', ({ roomId }, cb) => {
     try {
@@ -275,13 +312,26 @@ function register(socket, io) {
     }
   });
 
-  // ── 투표 ──────────────────────────────────────────────
+  // ── 투표 (토론 중 사전 투표 포함) ────────────────────────
   socket.on('vote', ({ roomId, targetId }, cb) => {
+    const respond = typeof cb === 'function' ? cb : () => {};
+
     try {
-      const voteCount = VoteSystem.submitVote(roomId, socket.userId, targetId);
-      cb({ ok: true, voteCount });
+      if (!targetId) {
+        return respond({ ok: false, error: '투표 대상이 없습니다.' });
+      }
+
+      const session = VoteSystem.sessions.get(roomId);
+      if (!session) {
+        return respond({ ok: false, error: '진행 중인 회의가 없습니다.' });
+      }
+
+      const result = VoteSystem.submitVote(roomId, socket.userId, targetId);
+      respond({ ok: true, ...result });
+
     } catch (e) {
-      cb({ ok: false, error: e.message });
+      console.error('[vote] 오류:', e.message);
+      respond({ ok: false, error: e.message });
     }
   });
 

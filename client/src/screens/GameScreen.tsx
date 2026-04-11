@@ -1,5 +1,5 @@
 // src/screens/GameScreen.tsx
-// 메인 게임 화면 — 역할(crew/impostor)에 따라 UI 분기 및 토스트 알림 추가
+// 메인 게임 화면 — 역할(crew/impostor)에 따라 UI 분기 및 AI 채팅 로그
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
@@ -7,14 +7,22 @@ import {
   ScrollView, Alert,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { socket }           from '../services/SocketService';
-import ProximityService     from '../services/ProximityService';
-import KillButton           from '../components/KillButton';
-import AIMessageFeed        from '../components/AIMessageFeed';
-import MissionList          from '../components/MissionList';
-import ProximityIndicator   from '../components/ProximityIndicator';
-import { gameStore }        from '../store/gameStore';
+import { socket }             from '../services/SocketService';
+import ProximityService       from '../services/ProximityService';
+import KillButton             from '../components/KillButton';
+import MissionList            from '../components/MissionList';
+import AIChatInput            from '../components/AIChatInput';
+import ProximityMapModal      from '../components/ProximityMapModal';
+import { gameStore }          from '../store/gameStore';
 import { PlayerInfo, MissionTask, GameResult } from '../types/navigation';
+
+// ── 채팅 로그 타입 ────────────────────────────────────────────
+interface ChatLog {
+  id:        string;
+  type:      'ai_announce' | 'ai_guide' | 'ai_reply' | 'system';
+  message:   string;
+  timestamp: number;
+}
 
 interface NearbyPlayer {
   playerId:    string;
@@ -35,16 +43,24 @@ export default function GameScreen() {
   const [killableTargets, setKillableTargets] = useState<NearbyPlayer[]>([]);
   const [missionProgress, setMissionProgress] = useState({ completed: 0, total: 0, percent: 0 });
   const [currentZone,     setCurrentZone]     = useState<string | null>(initialInfo?.zone ?? null);
-  const [showProximity,   setShowProximity]   = useState(false);
-  
-  // 추가: 토스트 메시지 상태
-  const [toastMessage,    setToastMessage]    = useState<string | null>(null);
+  const [showMap,         setShowMap]         = useState(false);
+
+  // ── 토스트 ────────────────────────────────────────────────
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const reportCooldown = useRef(false);
 
-  // ── 토스트 알림 헬퍼 ─────────────────────────────────────
+  // ── AI 채팅 로그 ──────────────────────────────────────────
+  const [chatLogs,  setChatLogs]  = useState<ChatLog[]>([]);
+  const [aiLoading, setAiLoading] = useState(false);
+  const chatScrollRef = useRef<ScrollView>(null);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const appendLog = (log: ChatLog) => {
+    setChatLogs(prev => [...prev, log]);
   };
 
   useEffect(() => {
@@ -54,6 +70,7 @@ export default function GameScreen() {
   const isImpostor = playerInfo?.role === 'impostor';
   const isAlive    = playerInfo?.isAlive ?? false;
 
+  // ── 게임 소켓 이벤트 ──────────────────────────────────────
   useEffect(() => {
     socket.on('mission_progress', (data: { completed: number; total: number; percent: number }) => {
       setMissionProgress(data);
@@ -67,7 +84,7 @@ export default function GameScreen() {
           t.missionId === data.missionId ? { ...t, status: 'completed' as const } : t
         ),
       }) : prev);
-      showToast("✅ 미션 완료!");
+      showToast('✅ 미션 완료!');
     });
 
     socket.on('killable_targets', (data: { targets: NearbyPlayer[] }) => {
@@ -105,6 +122,35 @@ export default function GameScreen() {
       }) : prev);
     });
 
+    // ── AI 채팅 로그 이벤트 ────────────────────────────────
+    socket.on('ai_message', (data: { type: string; message: string }) => {
+      appendLog({
+        id:        Date.now().toString(),
+        type:      'ai_announce',
+        message:   data.message,
+        timestamp: Date.now(),
+      });
+    });
+
+    socket.on('ai_guide', (data: { message: string }) => {
+      appendLog({
+        id:        Date.now().toString(),
+        type:      'ai_guide',
+        message:   data.message,
+        timestamp: Date.now(),
+      });
+    });
+
+    socket.on('ai_reply', (data: { question: string; answer: string }) => {
+      appendLog({
+        id:        Date.now().toString(),
+        type:      'ai_reply',
+        message:   data.answer,
+        timestamp: Date.now(),
+      });
+      setAiLoading(false);
+    });
+
     return () => {
       socket.off('mission_progress');
       socket.off('mission_completed');
@@ -113,9 +159,13 @@ export default function GameScreen() {
       socket.off('game_ended');
       socket.off('currency_updated');
       socket.off('mission_available');
+      socket.off('ai_message');
+      socket.off('ai_guide');
+      socket.off('ai_reply');
     };
   }, [roomId, playerInfo?.userId]);
 
+  // ── 근접 감지 ─────────────────────────────────────────────
   useEffect(() => {
     if (!playerInfo) return;
     ProximityService.init(roomId, playerInfo.userId);
@@ -123,16 +173,17 @@ export default function GameScreen() {
     return () => { ProximityService.destroy(); };
   }, [roomId, playerInfo?.userId]);
 
+  // ── 신고 / 긴급 버튼 ──────────────────────────────────────
   const handleReport = useCallback((bodyId: string) => {
     if (reportCooldown.current) return;
     reportCooldown.current = true;
 
     socket.emit('report_body', { roomId, bodyId }, (res: { ok: boolean; error?: string }) => {
       if (res.ok) {
-        showToast("📢 시체를 신고했습니다!");
+        showToast('📢 시체를 신고했습니다!');
       } else {
         showToast(`❌ 신고 실패: ${res.error}`);
-        reportCooldown.current = false; // 실패 시 쿨다운 해제
+        reportCooldown.current = false;
       }
     });
   }, [roomId]);
@@ -140,9 +191,37 @@ export default function GameScreen() {
   const handleEmergency = useCallback(() => {
     socket.emit('emergency_meeting', { roomId }, (res: { ok: boolean; error?: string }) => {
       if (res.ok) {
-        showToast("🚨 긴급 회의 소집 중...");
+        showToast('🚨 긴급 회의 소집 중...');
       } else {
         showToast(`❌ 버튼 작동 실패: ${res.error}`);
+      }
+    });
+  }, [roomId]);
+
+  // ── AI 질문 전송 ──────────────────────────────────────────
+  const handleAskAI = useCallback((question: string) => {
+    setAiLoading(true);
+
+    // 내 질문 먼저 로그에 추가
+    appendLog({
+      id:        Date.now().toString(),
+      type:      'system',
+      message:   '나: ' + question,
+      timestamp: Date.now(),
+    });
+
+    socket.emit('ai_ask', { roomId, question }, (res: { ok: boolean; error?: string }) => {
+      if (res.ok) {
+        // 응답은 ai_reply 이벤트로 수신
+        setAiLoading(false);
+      } else {
+        appendLog({
+          id:        Date.now().toString(),
+          type:      'system',
+          message:   '❌ 오류: ' + (res.error ?? '알 수 없는 오류'),
+          timestamp: Date.now(),
+        });
+        setAiLoading(false);
       }
     });
   }, [roomId]);
@@ -155,7 +234,6 @@ export default function GameScreen() {
         <Text style={styles.deadIcon}>💀</Text>
         <Text style={styles.deadTitle}>사망</Text>
         <Text style={styles.deadSubTitle}>유령으로 게임을 지켜봅니다</Text>
-        <AIMessageFeed roomId={roomId} isGhost={true} />
       </View>
     );
   }
@@ -169,6 +247,7 @@ export default function GameScreen() {
         </View>
       )}
 
+      {/* 상단바: 역할 뱃지 / 미션 진행도 / 재화 */}
       <View style={styles.topBar}>
         <View style={[styles.roleBadge, isImpostor ? styles.roleBadgeImpostor : styles.roleBadgeCrew]}>
           <Text style={styles.roleBadgeText}>{isImpostor ? '임포스터' : '크루원'}</Text>
@@ -187,28 +266,54 @@ export default function GameScreen() {
         </TouchableOpacity>
       </View>
 
+      {/* 구역 배너 */}
       {currentZone && (
         <View style={styles.zoneBanner}>
           <Text style={styles.zoneBannerText}>📍 {currentZone.replace(/_/g, ' ')}</Text>
         </View>
       )}
 
-      <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <AIMessageFeed roomId={roomId} />
-        {!isImpostor && <MissionList tasks={playerInfo.tasks} currentZone={currentZone} />}
-        {isImpostor && <KillButton roomId={roomId} killableTargets={killableTargets} />}
-        <TouchableOpacity onPress={() => setShowProximity(prev => !prev)} style={styles.proximityToggle}>
-          <Text style={styles.proximityToggleText}>
-            {showProximity ? '▾ 주변 플레이어 숨기기' : '▸ 주변 플레이어 보기'}
-          </Text>
-        </TouchableOpacity>
-        {showProximity && <ProximityIndicator nearbyPlayers={nearbyPlayers} isImpostor={isImpostor} />}
+      {/* 미션 목록 / 킬 버튼 */}
+      {!isImpostor && <MissionList tasks={playerInfo.tasks} currentZone={currentZone} />}
+      {isImpostor  && <KillButton roomId={roomId} killableTargets={killableTargets} />}
+
+      {/* 주변 플레이어 보기 버튼 */}
+      <TouchableOpacity onPress={() => setShowMap(true)} style={styles.proximityToggle}>
+        <Text style={styles.proximityToggleText}>▸ 주변 플레이어 보기</Text>
+      </TouchableOpacity>
+
+      {/* AI 채팅 로그 */}
+      <ScrollView
+        ref={chatScrollRef}
+        style={styles.chatLog}
+        contentContainerStyle={styles.chatLogContent}
+        showsVerticalScrollIndicator={false}
+        onContentSizeChange={() => chatScrollRef.current?.scrollToEnd({ animated: true })}
+      >
+        {chatLogs.map(log => (
+          <View
+            key={log.id}
+            style={log.type === 'system' ? styles.logSystem : styles.logAI}
+          >
+            <Text style={log.type === 'system' ? styles.logSystemText : styles.logAIText}>
+              {log.message}
+            </Text>
+          </View>
+        ))}
       </ScrollView>
 
+      {/* AI 채팅 입력창 */}
+      <AIChatInput
+        onSend={handleAskAI}
+        loading={aiLoading}
+        disabled={!isAlive}
+      />
+
+      {/* 하단 신고 / 긴급 버튼 */}
       <View style={styles.bottomBar}>
         <TouchableOpacity
           style={styles.reportBtn}
-          onPress={() => handleReport('detected-body-id')} // 실제 감지된 bodyId 주입 필요
+          onPress={() => handleReport('detected-body-id')}
           activeOpacity={0.8}
         >
           <Text style={styles.reportBtnIcon}>🔴</Text>
@@ -219,40 +324,67 @@ export default function GameScreen() {
           <Text style={styles.emergencyBtnText}>긴급 버튼</Text>
         </TouchableOpacity>
       </View>
+
+      {/* 맵 모달 */}
+      <ProximityMapModal
+        visible={showMap}
+        onClose={() => setShowMap(false)}
+        nearbyPlayers={nearbyPlayers}
+        myNickname={playerInfo?.nickname ?? '나'}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   root:                { flex: 1, backgroundColor: '#e0f7f4' },
-  toastContainer:      { position: 'absolute', top: 110, left: 20, right: 20, backgroundColor: 'rgba(175, 230, 220, 0.95)', padding: 12, borderRadius: 10, zIndex: 1000, borderWidth: 1, borderColor: '#333', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 4 },
+  toastContainer:      { position: 'absolute', top: 110, left: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.88)', padding: 12, borderRadius: 10, zIndex: 1000, borderWidth: 1, borderColor: '#333', alignItems: 'center' },
   toastText:           { color: '#fff', fontSize: 13, fontWeight: '600' },
   topBar:              { flexDirection: 'row', alignItems: 'center', paddingTop: 52, paddingBottom: 10, paddingHorizontal: 14, gap: 10, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
   roleBadge:           { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1 },
   roleBadgeImpostor:   { backgroundColor: '#1a0a0a', borderColor: '#3a1a1a' },
-  roleBadgeCrew:       { backgroundColor: '#b0e8e0', borderColor: '#80ccc4' },
+  roleBadgeCrew:       { backgroundColor: '#0a1a0a', borderColor: '#1a3a1a' },
   roleBadgeText:       { fontSize: 12, fontWeight: '700', color: '#f0f0f0' },
   missionBarWrap:      { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6 },
   missionBarBg:        { flex: 1, height: 4, backgroundColor: '#1a1a1a', borderRadius: 2, overflow: 'hidden' },
   missionBarFill:      { height: 4, backgroundColor: '#00e676', borderRadius: 2 },
-  missionBarLabel:     { fontSize: 10, color: '#444', width: 28 },
+  missionBarLabel:     { fontSize: 10, color: '#1a1a1a', width: 28 },
   currencyChip:        { backgroundColor: '#181818', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
   currencyText:        { fontSize: 12, color: '#ffab40', fontWeight: '600' },
   zoneBanner:          { backgroundColor: '#111', paddingHorizontal: 14, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
   zoneBannerText:      { fontSize: 12, color: '#555', textTransform: 'capitalize' },
-  scroll:              { flex: 1 },
-  scrollContent:       { padding: 12, gap: 12, paddingBottom: 100 },
-  proximityToggle:     { paddingVertical: 8 },
-  proximityToggleText: { fontSize: 12, color: '#444' },
-  bottomBar:           { flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: '#1a1a1a', backgroundColor: '#e0f7f4' },
+  proximityToggle:     { paddingVertical: 8, paddingHorizontal: 14 },
+  proximityToggleText: { fontSize: 12, color: '#1a1a1a' },
+  // AI 채팅 로그
+  chatLog:             { flex: 1, backgroundColor: '#111' },
+  chatLogContent:      { padding: 12, gap: 8 },
+  logAI: {
+    alignSelf:       'flex-start',
+    backgroundColor: '#1e2a1e',
+    borderRadius:    8,
+    padding:         10,
+    maxWidth:        '85%',
+  },
+  logAIText:  { color: '#00e676', fontSize: 13, lineHeight: 18 },
+  logSystem: {
+    alignSelf:       'flex-end',
+    backgroundColor: '#1a1a2a',
+    borderRadius:    8,
+    padding:         10,
+    maxWidth:        '85%',
+  },
+  logSystemText: { color: '#888', fontSize: 13, lineHeight: 18 },
+  // 하단 버튼
+  bottomBar:           { flexDirection: 'row', padding: 12, gap: 10, borderTopWidth: 1, borderTopColor: '#1a1a1a', backgroundColor: '#0a0a0a' },
   reportBtn:           { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#1a0a0a', borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: '#3a1010' },
   reportBtnIcon:       { fontSize: 16 },
   reportBtnText:       { fontSize: 13, fontWeight: '600', color: '#ff5252' },
   emergencyBtn:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#1a1200', borderRadius: 12, paddingVertical: 12, borderWidth: 1, borderColor: '#2a2000' },
   emergencyBtnIcon:    { fontSize: 16 },
   emergencyBtnText:    { fontSize: 13, fontWeight: '600', color: '#ffab40' },
-  deadOverlay:         { flex: 1, backgroundColor: '#e0f7f4', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
+  // 사망 화면
+  deadOverlay:         { flex: 1, backgroundColor: '#0a0a0a', alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   deadIcon:            { fontSize: 64, opacity: 0.4 },
-  deadTitle:           { fontSize: 28, fontWeight: '700', color: '#2a2a2a' },
-  deadSubTitle:        { fontSize: 14, color: '#1a1a1a' },
+  deadTitle:           { fontSize: 28, fontWeight: '700', color: '#aaa' },
+  deadSubTitle:        { fontSize: 14, color: '#555' },
 });

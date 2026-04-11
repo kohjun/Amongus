@@ -22,6 +22,9 @@ class VoteSession {
     // 단계
     this.phase = VOTE_PHASE.DISCUSSION;
 
+    // 사전 투표 데이터 (토론 중 사전 확정)
+    this.preVotes = new Map(); // { voterId: targetId }
+
     // 투표 데이터
     // { voterId: targetId }  targetId는 플레이어ID 또는 'skip'
     this.votes = new Map();
@@ -31,6 +34,32 @@ class VoteSession {
 
     // 타이머 핸들 (취소용)
     this._timers = [];
+  }
+
+  // ── 사전 투표 (토론 단계) ────────────────────────────────
+
+  submitPreVote(voterId, targetId) {
+    if (this.phase !== VOTE_PHASE.DISCUSSION) {
+      throw new Error('토론 단계에서만 사전 투표할 수 있습니다.');
+    }
+    if (voterId === targetId) {
+      throw new Error('자기 자신에게 투표할 수 없습니다.');
+    }
+    // 사전 투표는 변경 가능 (덮어쓰기 허용)
+    this.preVotes.set(voterId, targetId);
+  }
+
+  isAllPreVoted(alivePlayers) {
+    return alivePlayers.every(p => this.preVotes.has(p.userId));
+  }
+
+  // 투표 단계 시작 시 사전 투표를 실제 votes에 이월
+  applyPreVotes() {
+    for (const [voterId, targetId] of this.preVotes) {
+      if (!this.votes.has(voterId)) {
+        this.votes.set(voterId, targetId);
+      }
+    }
   }
 
   // ── 투표 제출 ──────────────────────────────────────────

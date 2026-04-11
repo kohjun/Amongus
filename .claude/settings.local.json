@@ -3,7 +3,11 @@
     "allow": [
       "Bash(npx expo:*)",
       "Bash(sed -i 's|import { useAuth } from '\\\\''../hooks/useAuth'\\\\'';|import { useAuthContext } from '\\\\''../context/AuthContext'\\\\'';|g' C:/Users/kohju/OneDrive/Desktop/project/Amongus/client/src/screens/LoginScreen.tsx)",
-      "Bash(sed -i 's|const { signIn, signUp, signInWithGoogle, loading, error } = useAuth\\(\\);|const { signIn, signUp, signInWithGoogle, loading, error } = useAuthContext\\(\\);|g' C:/Users/kohju/OneDrive/Desktop/project/Amongus/client/src/screens/LoginScreen.tsx)"
+      "Bash(sed -i 's|const { signIn, signUp, signInWithGoogle, loading, error } = useAuth\\(\\);|const { signIn, signUp, signInWithGoogle, loading, error } = useAuthContext\\(\\);|g' C:/Users/kohju/OneDrive/Desktop/project/Amongus/client/src/screens/LoginScreen.tsx)",
+      "Bash(node server/ai/rag/embedKnowledge.js)",
+      "Bash(node -e \"const p = require\\('./node_modules/@google/generative-ai/package.json'\\); console.log\\('SDK version:', p.version\\);\")",
+      "Bash(node -e \"const p = require\\('@google/generative-ai/package.json'\\); console.log\\(p.version\\);\")",
+      "Bash(node -e ':*)"
     ]
   }
 }
